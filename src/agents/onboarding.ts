@@ -16,12 +16,22 @@ const DEFAULT_HOURS = {
   fri: [['09:00', '17:00']],
 } as TenantProfile['hours'];
 
+const PRIVATE_HOST_RE =
+  /^(localhost|127\.|10\.|192\.168\.|169\.254\.|0\.|\[?::1\]?|172\.(1[6-9]|2\d|3[01])\.)/i;
+
 async function fetchWebsiteText(url: string): Promise<string> {
   try {
+    const target = new URL(url.startsWith('http') ? url : `https://${url}`);
+    // SSRF guard: public http(s) hosts only — never internal/metadata ranges.
+    if (!['http:', 'https:'].includes(target.protocol)) return '';
+    if (PRIVATE_HOST_RE.test(target.hostname) || target.hostname === 'metadata.google.internal') {
+      return '';
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 6000);
-    const res = await fetch(url.startsWith('http') ? url : `https://${url}`, {
+    const res = await fetch(target, {
       signal: controller.signal,
+      redirect: 'error',
       headers: { 'User-Agent': 'RingBackOnboarding/1.0' },
     });
     clearTimeout(timer);

@@ -36,9 +36,14 @@ describe('token signing', () => {
 });
 
 describe('magic tokens', () => {
-  test('valid magic token returns email', () => {
+  test('valid magic token returns email + unique single-use id', () => {
     const token = createMagicToken('owner@shop.com');
-    expect(verifyMagicToken(token)).toBe('owner@shop.com');
+    const result = verifyMagicToken(token);
+    expect(result?.email).toBe('owner@shop.com');
+    expect(result?.jti).toMatch(/^[0-9a-f-]{36}$/);
+    // Two tokens for the same email must have distinct jtis (single-use burn).
+    const second = verifyMagicToken(createMagicToken('owner@shop.com'));
+    expect(second?.jti).not.toBe(result?.jti);
   });
 
   test('session tokens are not magic tokens', () => {

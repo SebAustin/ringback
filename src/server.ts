@@ -37,6 +37,21 @@ export async function buildApp() {
     timeWindow: '1 minute',
   });
 
+  // Security headers on every response (CSP allows only same-origin assets).
+  app.addHook('onSend', async (_req, reply) => {
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('X-Frame-Options', 'DENY');
+    reply.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+    reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    reply.header(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
+    );
+    if (cfg.APP_BASE_URL.startsWith('https')) {
+      reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
+  });
+
   registerTwilioRoutes(app);
   registerStripeRoutes(app);
   registerAgentRoutes(app);
@@ -47,7 +62,8 @@ export async function buildApp() {
 
   // Built SPA (web/ → public/). Missing in pure-API test runs — that's fine.
   const publicDir = path.resolve(__dirname, '..', 'public');
-  await app.register(fastifyStatic, { root: publicDir, wildcard: false }).after(() => {
+  // wildcard:true resolves files at request time (freshly built assets included).
+  await app.register(fastifyStatic, { root: publicDir, wildcard: true }).after(() => {
     app.setNotFoundHandler((req, reply) => {
       const url = req.raw.url ?? '';
       if (url.startsWith('/api') || url.startsWith('/webhooks') || url.startsWith('/agents')) {

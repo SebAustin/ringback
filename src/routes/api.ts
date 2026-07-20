@@ -108,8 +108,15 @@ export function registerApiRoutes(app: FastifyInstance): void {
 
   app.get('/api/auth/callback', async (req, reply) => {
     const token = (req.query as { token?: string }).token ?? '';
-    const email = verifyMagicToken(token);
-    if (!email) return reply.redirect('/login?error=expired');
+    const verifiedMagic = verifyMagicToken(token);
+    if (!verifiedMagic) return reply.redirect('/login?error=expired');
+    // Single-use: burn the token id; replays bounce.
+    const firstUse = await getStore().createIfAbsent('used_tokens', verifiedMagic.jti, {
+      email: verifiedMagic.email,
+      usedAt: nowIso(),
+    });
+    if (!firstUse) return reply.redirect('/login?error=expired');
+    const email = verifiedMagic.email;
 
     let user: SessionUser;
     if (email === cfg.FOUNDER_EMAIL.toLowerCase()) {

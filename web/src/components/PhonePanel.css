@@ -1,0 +1,58 @@
+.phone-panel {
+  --phone-width: 22rem;
+  width: min(100%, var(--phone-width));
+  background: oklch(20% 0.015 60);
+  border-radius: 34px;
+  padding: 0.55rem;
+  box-shadow: var(--shadow-card), 0 24px 60px oklch(22% 0.02 60 / 0.22);
+}
+
+.phone-panel-screen {
+  background: var(--paper-raised);
+  border-radius: 26px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 26rem;
+}
+
+.phone-panel-notch {
+  height: 1.6rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--paper-raised);
+}
+
+.phone-panel-notch::before {
+  content: '';
+  width: 5rem;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: oklch(80% 0.01 60);
+}
+
+.phone-panel-header {
+  padding: var(--space-2xs) var(--space-sm) var(--space-xs);
+  border-bottom: 1px solid var(--hairline);
+  text-align: center;
+}
+
+.phone-panel-header .contact-name {
+  font-weight: 600;
+  font-size: var(--text-sm);
+}
+
+.phone-panel-header .contact-meta {
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
+}
+
+.phone-panel-thread {
+  flex: 1;
+  padding: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  overflow-y: auto;
+}

@@ -160,13 +160,13 @@ function mockReceptionist(opts: GenerateOpts): GenResult {
     };
   }
 
-  if (/\b(book|appointment|schedule|come in|slot|available|opening|reserve)\b/i.test(userText)) {
+  if (/\b(book|appointment|schedule|come in|slot|available|availability|open|opening|reserve)\b/i.test(userText)) {
     return { ...base, text: '', functionCalls: [{ name: 'get_availability', args: { days: 7 } }] };
   }
   if (/\b(price|cost|how much|rates?)\b/i.test(userText)) {
     return { ...base, text: 'Our current service list and prices are on our website — happy to book you in so you can chat details in person. Would you like an appointment?' };
   }
-  if (/\b(hours?|open|close)\b/i.test(userText)) {
+  if (/\b(hours?|close|closing)\b/i.test(userText)) {
     return { ...base, text: 'We are open our regular business hours — want me to book you a spot?' };
   }
   return {

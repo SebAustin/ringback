@@ -47,8 +47,9 @@ export const cfg = parsed.data;
 export const isProd = cfg.NODE_ENV === 'production';
 export const isTest = cfg.NODE_ENV === 'test';
 
-/** True when Gemini should return canned responses (no key or explicit mock). */
-export const geminiMock = cfg.GEMINI_MOCK === '1' || (!cfg.GEMINI_API_KEY && !isProd);
+/** True when Gemini should return canned responses (no key or explicit mock).
+ * Never true in production — prod requires a real key and ignores the flag. */
+export const geminiMock = !isProd && (cfg.GEMINI_MOCK === '1' || !cfg.GEMINI_API_KEY);
 
 /** True when Twilio calls should be faked (no credentials configured). */
 export const twilioMock = !cfg.TWILIO_ACCOUNT_SID || !cfg.TWILIO_AUTH_TOKEN;

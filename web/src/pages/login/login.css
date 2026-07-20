@@ -1,0 +1,62 @@
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--paper);
+  padding: var(--space-md);
+}
+
+.login-panel {
+  width: min(100%, 26rem);
+  background: var(--paper-raised);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  padding: var(--space-xl);
+  box-shadow: var(--shadow-card);
+  text-align: center;
+}
+
+.login-panel .brand {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  text-decoration: none;
+  color: var(--ink);
+  display: inline-block;
+  margin-bottom: var(--space-md);
+}
+
+.login-panel .brand::before {
+  content: '☎ ';
+  color: var(--accent);
+}
+
+.login-panel h1 {
+  font-size: var(--text-xl);
+  margin-bottom: var(--space-2xs);
+}
+
+.login-panel p {
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  margin-bottom: var(--space-md);
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  text-align: left;
+}
+
+.login-dev-hint {
+  margin-top: var(--space-md);
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+}
+
+.login-sent-icon {
+  font-size: var(--text-2xl);
+  margin-bottom: var(--space-sm);
+}

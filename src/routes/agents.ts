@@ -27,7 +27,9 @@ async function isAuthorizedInvoker(req: FastifyRequest): Promise<boolean> {
         audience: cfg.APP_BASE_URL,
       });
       const email = ticket.getPayload()?.email ?? '';
-      return email.endsWith('.gserviceaccount.com');
+      // Exact-match the scheduler SA — any-GCP-customer tokens must not pass.
+      const expected = `scheduler-invoker@${cfg.GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com`;
+      return email === expected;
     } catch {
       return false;
     }
@@ -76,7 +78,9 @@ export function registerAgentRoutes(app: FastifyInstance): void {
   });
 
   // SendGrid Inbound Parse → support agent. Multipart/urlencoded form fields.
-  app.post('/webhooks/inbound-email', async (req, reply) => {
+  app.post('/webhooks/inbound-email', {
+    config: { rateLimit: { max: 20, timeWindow: '15 minutes' } },
+  }, async (req, reply) => {
     const key = (req.query as { key?: string }).key ?? '';
     if (key !== inboundEmailKey()) return reply.code(403).send({ error: 'forbidden' });
     const body = (req.body ?? {}) as Record<string, string>;

@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { FastifyRequest } from 'fastify';
 import { cfg } from '../config.js';
 
@@ -50,12 +50,14 @@ export function createSessionCookie(user: SessionUser): string {
 }
 
 export function createMagicToken(email: string): string {
-  return signToken({ email, kind: 'magic' }, MAGIC_LINK_TTL_SECONDS);
+  return signToken({ email, kind: 'magic', jti: randomUUID() }, MAGIC_LINK_TTL_SECONDS);
 }
 
-export function verifyMagicToken(token: string): string | null {
-  const payload = verifyToken<{ email: string; kind: string }>(token);
-  return payload && payload.kind === 'magic' ? payload.email : null;
+/** Returns email + single-use id; the caller must burn the jti in the store. */
+export function verifyMagicToken(token: string): { email: string; jti: string } | null {
+  const payload = verifyToken<{ email: string; kind: string; jti?: string }>(token);
+  if (!payload || payload.kind !== 'magic') return null;
+  return { email: payload.email, jti: payload.jti ?? 'legacy' };
 }
 
 export function getSessionUser(req: FastifyRequest): SessionUser | null {

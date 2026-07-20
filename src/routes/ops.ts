@@ -13,17 +13,26 @@ import { handleInboundMessage, findOrCreateConversation } from '../receptionist/
 import { textbackGreeting } from '../receptionist/prompts.js';
 import { nowIso } from '../lib/time.js';
 
-/** Mask anything phone-shaped in public output. */
+/** Mask anything phone- or email-shaped in public output. */
 function redactText(s: string): string {
-  return s.replace(/\+?\d[\d\s().-]{6,}\d/g, (m) => {
-    const digits = m.replace(/\D/g, '');
-    return `+${digits.slice(0, 1)}***${digits.slice(-4)}`;
-  });
+  return s
+    .replace(/\+?\d[\d\s().-]{6,}\d/g, (m) => {
+      const digits = m.replace(/\D/g, '');
+      return `+${digits.slice(0, 1)}***${digits.slice(-4)}`;
+    })
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, (m) => {
+      const [local = '', domain = ''] = m.split('@');
+      return `${local.slice(0, 1)}***@${domain}`;
+    });
 }
+
+/** Agents whose transcripts always contain real-customer communication. */
+const PRIVATE_TRANSCRIPT_AGENTS = new Set(['support', 'onboarding']);
 
 function redactRun(run: WithId<AgentRun>): WithId<AgentRun> {
   const isPrivateReceptionist =
     run.agent === 'receptionist' && run.tenantId !== undefined && run.tenantId !== cfg.DEMO_TENANT_ID;
+  const isPrivate = isPrivateReceptionist || PRIVATE_TRANSCRIPT_AGENTS.has(run.agent);
   return {
     ...run,
     publicSummary: redactText(run.publicSummary),
@@ -31,8 +40,8 @@ function redactRun(run: WithId<AgentRun>): WithId<AgentRun> {
     transcript: run.transcript.map((t) => ({
       ...t,
       // Real-customer message bodies never appear on the public feed.
-      prompt: isPrivateReceptionist ? '[redacted — real customer conversation]' : t.prompt && redactText(t.prompt),
-      response: isPrivateReceptionist ? '[redacted]' : t.response && redactText(t.response),
+      prompt: isPrivate ? '[redacted — customer communication]' : t.prompt && redactText(t.prompt),
+      response: isPrivate ? '[redacted]' : t.response && redactText(t.response),
       result: t.result ? redactText(t.result) : undefined,
     })),
     actions: run.actions.map((a) => ({ ...a, payload: JSON.parse(redactText(JSON.stringify(a.payload))) })),
@@ -179,6 +188,7 @@ export function registerOpsRoutes(app: FastifyInstance): void {
         services: tenant.profile.services,
         hoursNote: 'Tue–Sat, Eastern Time',
       },
+      messages: [{ role: 'assistant', body: greeting, createdAt: nowIso() }],
     };
   });
 
@@ -193,6 +203,20 @@ export function registerOpsRoutes(app: FastifyInstance): void {
 
     const tenantId = cfg.DEMO_TENANT_ID;
     const store = getStore();
+
+    // Public-demo spend cap: bounded Gemini usage per day regardless of rate limits.
+    const today = isoDateOnly(new Date());
+    const demoRunsToday = await store.query('agent_runs', {
+      where: [
+        ['trigger.detail', '==', 'demo:web-simulator'],
+        ['startedAt', '>=', `${today}T00:00:00.000Z`],
+      ],
+      limit: 501,
+    });
+    if (demoRunsToday.length > 500) {
+      return reply.code(429).send({ error: 'demo is very popular today — try again tomorrow!' });
+    }
+
     const tenant = await store.get<Tenant>('tenants', tenantId);
     const conversation = await store.get<Conversation>(
       `tenants/${tenantId}/conversations`,
