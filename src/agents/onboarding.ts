@@ -19,6 +19,24 @@ const DEFAULT_HOURS = {
 const PRIVATE_HOST_RE =
   /^(localhost|127\.|10\.|192\.168\.|169\.254\.|0\.|\[?::1\]?|172\.(1[6-9]|2\d|3[01])\.)/i;
 
+/** Resolve the hostname and reject if ANY address is private/link-local (anti-rebinding-lite). */
+async function resolvesToPrivateIp(hostname: string): Promise<boolean> {
+  try {
+    const { lookup } = await import('node:dns/promises');
+    const addrs = await lookup(hostname, { all: true });
+    return addrs.some(
+      (a) =>
+        PRIVATE_HOST_RE.test(a.address) ||
+        a.address === '::1' ||
+        a.address.startsWith('fc') ||
+        a.address.startsWith('fd') ||
+        a.address.startsWith('fe80'),
+    );
+  } catch {
+    return true; // unresolvable → treat as unsafe
+  }
+}
+
 async function fetchWebsiteText(url: string): Promise<string> {
   try {
     const target = new URL(url.startsWith('http') ? url : `https://${url}`);
@@ -27,6 +45,7 @@ async function fetchWebsiteText(url: string): Promise<string> {
     if (PRIVATE_HOST_RE.test(target.hostname) || target.hostname === 'metadata.google.internal') {
       return '';
     }
+    if (await resolvesToPrivateIp(target.hostname)) return '';
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 6000);
     const res = await fetch(target, {

@@ -167,3 +167,17 @@ Ships `SESSION_SECRET=dev-secret-...` (guarded against in prod by `assertProdCon
 5. **[MEDIUM-6 + MEDIUM-5] Cap public spend.** Add a daily Gemini budget for the demo tenant and cache/rate-limit `/api/ops/summary`.
 6. **[MEDIUM-4] Block SSRF** in the onboarding website fetch (reject private IPs, cap redirects/size).
 7. **[MEDIUM-7 + MEDIUM-8] Patch deps and add security headers.** Upgrade `@fastify/static` (→^10) and `firebase-admin` (→^14); register `@fastify/helmet` with CSP/HSTS; fail CI on high/critical audit findings.
+
+---
+
+## Remediation status — 2026-07-20 improvement pass
+
+- **HIGH-1 (OIDC)**: fixed — exact `scheduler-invoker@<project>` match **plus `email_verified === true`** (`src/routes/agents.ts`).
+- **HIGH-2 (ops PII)**: fixed — email + phone masking, support/onboarding + non-demo receptionist transcripts fully redacted (`src/routes/ops.ts`).
+- **Magic links**: single-use (`jti` burned in `used_tokens`).
+- **Inbound email**: rate-limited (20/15min) + shared-secret key.
+- **Demo spend**: 429 after 500 demo runs/day + per-route rate limits.
+- **SSRF**: scheme + private-host regex + **DNS resolution check** (unresolvable or private A/AAAA → refuse), `redirect:'error'`, 6s timeout. Residual: TOCTOU DNS rebinding between check and fetch — LOW at current exposure.
+- **Dependencies**: `find-my-way` HTTP2 DoS fixed via `npm audit fix`; `firebase-admin`→14, `@fastify/static`→10, `@fastify/rate-limit`→11, `google-auth-library`→10; `uuid`/`brace-expansion` pinned via overrides. **0 high/critical remain.** 2 moderate accepted: React Router 6 SSR-hydration + `<Link>` backslash advisories — this SPA does no SSR and has no user-controlled link hrefs; revisit with the RR7 migration.
+- **Data lifecycle**: watchdog now auto-purges churned tenants' conversations after 30 days (was a manual runbook step).
+- **CI**: GitHub Actions workflow runs typecheck + tests + build + `npm audit --audit-level=high` on every push.

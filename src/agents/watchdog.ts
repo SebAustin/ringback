@@ -146,6 +146,34 @@ async function writeDailyMetrics(tenants: WithId<Tenant>[]): Promise<MetricsDail
   return metrics;
 }
 
+const CHURN_PURGE_MS = 30 * 86_400_000;
+
+/** GDPR-hygiene: purge conversation data 30 days after a tenant churns. */
+async function purgeChurnedTenants(ctx: AgentContext): Promise<number> {
+  const store = getStore();
+  const churned = await store.query<Tenant & { purgedAt?: string; churnedAt?: string }>('tenants', {
+    where: [['status', '==', 'churned']],
+  });
+  let purged = 0;
+  for (const t of churned) {
+    if (t.purgedAt) continue;
+    const churnedAt = new Date(t.churnedAt ?? t.createdAt).getTime();
+    if (Date.now() - churnedAt < CHURN_PURGE_MS) continue;
+    const convs = await store.query<Conversation>(`tenants/${t.id}/conversations`, {});
+    for (const conv of convs) {
+      const msgs = await store.query(`tenants/${t.id}/conversations/${conv.id}/messages`, {});
+      for (const m of msgs) await store.delete(`tenants/${t.id}/conversations/${conv.id}/messages`, m.id);
+      await store.delete(`tenants/${t.id}/conversations`, conv.id);
+    }
+    await store.merge('tenants', t.id, { purgedAt: nowIso() });
+    purged++;
+    await ctx.action('purge_churned_tenant_data', { tenantId: t.id, conversations: convs.length }, {
+      execute: async () => undefined,
+    });
+  }
+  return purged;
+}
+
 /** Every-15-min sweep: close idle threads, flag stuck ones, enforce budgets, refresh daily metrics. */
 export async function runWatchdog(triggerDetail: string): Promise<{ runId: string; summary: string }> {
   const result = await runAgent('watchdog', { type: 'cron', detail: triggerDetail }, undefined, async (ctx) => {
@@ -162,9 +190,10 @@ export async function runWatchdog(triggerDetail: string): Promise<{ runId: strin
       stuck += r.stuck;
       if (r.paused) paused++;
     }
+    const purged = await purgeChurnedTenants(ctx);
     const metrics = await writeDailyMetrics(tenants);
     await ctx.log('daily-metrics', { result: JSON.stringify(metrics) });
-    return `Watchdog swept ${tenants.length} tenants: ${closed} idle conversations closed, ${stuck} stuck flagged, ${paused} paused for budget. Today: ${metrics.conversations} conversations, ${metrics.bookings} bookings.`;
+    return `Watchdog swept ${tenants.length} tenants: ${closed} idle conversations closed, ${stuck} stuck flagged, ${paused} paused for budget${purged > 0 ? `, ${purged} churned tenants purged` : ''}. Today: ${metrics.conversations} conversations, ${metrics.bookings} bookings.`;
   });
   return { runId: result.runId, summary: result.summary };
 }

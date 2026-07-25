@@ -87,6 +87,47 @@ describe('watchdog', () => {
   });
 });
 
+describe('watchdog churn purge', () => {
+  test('purges conversations 30+ days after churn, once', async () => {
+    const store = getStore();
+    const tenantId = await store.add('tenants', {
+      name: 'Gone Salon',
+      ownerEmail: 'gone@x.y',
+      ownerPhone: '',
+      status: 'churned',
+      churnedAt: new Date(Date.now() - 31 * 86_400_000).toISOString(),
+      profile: { services: [], faqs: [], hours: {}, timezone: 'America/New_York' },
+      limits: { dailySmsSegments: 200, maxTurns: 20 },
+      billing: {},
+      createdAt: new Date(Date.now() - 60 * 86_400_000).toISOString(),
+    });
+    const convId = await store.add(`tenants/${tenantId}/conversations`, {
+      tenantId,
+      callerPhone: '+15550001111',
+      channel: 'sms',
+      source: 'inbound_sms',
+      status: 'closed',
+      turnCount: 2,
+      smsSegmentsUsed: 2,
+      createdAt: new Date().toISOString(),
+      lastMessageAt: new Date().toISOString(),
+    });
+    await store.add(`tenants/${tenantId}/conversations/${convId}/messages`, {
+      role: 'caller',
+      body: 'private stuff',
+      createdAt: new Date().toISOString(),
+    });
+
+    const { summary } = await runWatchdog('test');
+    expect(summary).toContain('1 churned tenants purged');
+    expect(await store.query(`tenants/${tenantId}/conversations`, {})).toHaveLength(0);
+
+    // Second run does not re-purge.
+    const second = await runWatchdog('test');
+    expect(second.summary).not.toContain('purged');
+  });
+});
+
 describe('cfo', () => {
   test('produces a stored weekly report', async () => {
     await runWatchdog('test'); // seed metrics

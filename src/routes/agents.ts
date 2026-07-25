@@ -26,10 +26,10 @@ async function isAuthorizedInvoker(req: FastifyRequest): Promise<boolean> {
         idToken: auth.slice(7),
         audience: cfg.APP_BASE_URL,
       });
-      const email = ticket.getPayload()?.email ?? '';
+      const payload = ticket.getPayload();
       // Exact-match the scheduler SA — any-GCP-customer tokens must not pass.
       const expected = `scheduler-invoker@${cfg.GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com`;
-      return email === expected;
+      return payload?.email === expected && payload.email_verified === true;
     } catch {
       return false;
     }

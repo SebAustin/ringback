@@ -68,7 +68,7 @@ export function registerStripeRoutes(app: FastifyInstance): void {
           await store.merge('tenants', tenant.id, {
             'billing.status': churned ? 'canceled' : sub.status,
             'billing.plan': planForPrice(priceId),
-            ...(churned ? { status: 'churned' } : {}),
+            ...(churned ? { status: 'churned', churnedAt: nowIso() } : {}),
           });
           break;
         }
