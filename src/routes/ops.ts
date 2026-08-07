@@ -63,19 +63,31 @@ export function registerOpsRoutes(app: FastifyInstance): void {
   // Served from the watchdog-precomputed doc + a short in-process cache — a
   // public endpoint must never fan out N+1 Firestore reads per request (H10).
   let summaryCache: { value: OpsSummary; at: number } | null = null;
+  let summaryInFlight: Promise<OpsSummary> | null = null;
   const SUMMARY_CACHE_MS = 30_000;
 
   app.get('/api/ops/summary', async () => {
     if (summaryCache && Date.now() - summaryCache.at < SUMMARY_CACHE_MS) {
       return summaryCache.value;
     }
-    const stored = await getStore().get<OpsSummary>('ops_summary', 'current');
-    const fresh =
-      stored && Date.now() - new Date(stored.computedAt).getTime() < 20 * 60_000
-        ? stored
-        : await persistOpsSummary();
-    summaryCache = { value: fresh, at: Date.now() };
-    return fresh;
+    // Single-flight: N concurrent requests share one recompute instead of
+    // each fanning out the full Firestore read.
+    if (!summaryInFlight) {
+      summaryInFlight = (async () => {
+        try {
+          const stored = await getStore().get<OpsSummary>('ops_summary', 'current');
+          const fresh =
+            stored && Date.now() - new Date(stored.computedAt).getTime() < 20 * 60_000
+              ? stored
+              : await persistOpsSummary();
+          summaryCache = { value: fresh, at: Date.now() };
+          return fresh;
+        } finally {
+          summaryInFlight = null;
+        }
+      })();
+    }
+    return summaryInFlight;
   });
 
   app.get('/api/ops/runs', async (req) => {

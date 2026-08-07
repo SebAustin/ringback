@@ -117,12 +117,27 @@ async function verifyIndexes(): Promise<void> {
     ['prospects', { where: [['status', '==', 'drafted']], orderBy: ['createdAt', 'desc'], limit: 1 }],
   ];
   for (const [path, q] of probes) {
-    try {
-      await getStore().query(path, q);
-    } catch (err) {
-      throw new Error(
-        `Missing Firestore index for query on "${path}" — run infra/setup.sh (indexes step) and wait for builds to finish. Underlying: ${String(err)}`,
-      );
+    // Only a missing index is a config error worth crashing on; a transient
+    // Firestore blip at boot must not become a Cloud Run crash-loop.
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await getStore().query(path, q);
+        lastErr = undefined;
+        break;
+      } catch (err) {
+        lastErr = err;
+        const msg = String(err);
+        if (msg.includes('FAILED_PRECONDITION') || /requires an? .*index/i.test(msg)) {
+          throw new Error(
+            `Missing Firestore index for query on "${path}" — run infra/setup.sh (indexes step) and wait for builds to finish. Underlying: ${msg}`,
+          );
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+    if (lastErr !== undefined) {
+      throw new Error(`Firestore unreachable during index probe on "${path}": ${String(lastErr)}`);
     }
   }
 }

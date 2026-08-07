@@ -2,7 +2,7 @@ import twilio from 'twilio';
 import { cfg, twilioMock } from '../config.js';
 import { getStore } from './store.js';
 import { nowIso } from './time.js';
-import { retryOnce, withTimeout } from './async.js';
+import { isRetriable, retryOnce, TimeoutError, withTimeout } from './async.js';
 
 /** Approximate cost per outbound SMS segment (US long code / toll-free). */
 export const SMS_SEGMENT_COST_USD = 0.0079;
@@ -63,6 +63,9 @@ export async function sendSms(opts: {
           'twilio:sendSms',
         ),
       'twilio:sendSms',
+      // NEVER retry on our own timeout — Twilio may have queued the message and
+      // a blind retry double-texts the customer (R3). Retry only explicit 429/5xx.
+      (err) => !(err instanceof TimeoutError) && isRetriable(err),
     );
     sid = msg.sid;
   }

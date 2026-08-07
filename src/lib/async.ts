@@ -34,12 +34,18 @@ export function isRetriable(err: unknown): boolean {
   return status === 429 || (status >= 500 && status < 600);
 }
 
-/** One bounded retry with jittered backoff on 429/5xx/timeout only. */
-export async function retryOnce<T>(fn: () => Promise<T>, label: string): Promise<T> {
+/** One bounded retry with jittered backoff. Default predicate: 429/5xx/timeout.
+ * Pass a custom predicate for non-idempotent calls — e.g. an SMS send must
+ * NOT retry on a client-side timeout (the message may already be queued). */
+export async function retryOnce<T>(
+  fn: () => Promise<T>,
+  label: string,
+  retriable: (err: unknown) => boolean = isRetriable,
+): Promise<T> {
   try {
     return await fn();
   } catch (err) {
-    if (!isRetriable(err)) throw err;
+    if (!retriable(err)) throw err;
     await new Promise((r) => setTimeout(r, 400 + Math.random() * 400));
     // eslint-disable-next-line no-console
     console.error(JSON.stringify({ severity: 'warning', msg: `retrying ${label}`, err: String(err) }));

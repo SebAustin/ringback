@@ -15,6 +15,7 @@ import {
   type SessionUser,
 } from '../lib/auth.js';
 import { createCheckoutSession, createPortalSession, stripeConfigured } from '../lib/stripe.js';
+import { addMessage } from '../receptionist/conversation.js';
 
 function requireUser(req: FastifyRequest, reply: FastifyReply): SessionUser | null {
   const user = getSessionUser(req);
@@ -228,11 +229,9 @@ export function registerApiRoutes(app: FastifyInstance): void {
         tenantId: ctx.tenantId,
       });
     }
-    await getStore().add(`${convPath}/${id}/messages`, {
-      role: 'owner',
-      body,
-      createdAt: nowIso(),
-    });
+    // Through addMessage so the required `seq` ordering key is stamped —
+    // a seq-less doc is invisible to every reader (R1).
+    await addMessage(ctx.tenantId, id, { role: 'owner', body, createdAt: nowIso() });
     await getStore().merge(convPath, id, { status: 'owner_takeover', lastMessageAt: nowIso() });
     return { ok: true };
   });

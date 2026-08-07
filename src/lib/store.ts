@@ -79,7 +79,12 @@ export class MemoryStore implements Store {
     return c;
   }
 
-  private evictIfFull(coll: Map<string, object>, incomingId: string): void {
+  /** Compliance-critical collections are never evicted — dropping an opt-out
+   * record would silently un-block a caller who said STOP. */
+  private static readonly NEVER_EVICT = new Set(['optouts', 'tenants']);
+
+  private evictIfFull(path: string, coll: Map<string, object>, incomingId: string): void {
+    if (MemoryStore.NEVER_EVICT.has(path)) return;
     if (coll.size >= MEMORY_MAX_DOCS_PER_COLLECTION && !coll.has(incomingId)) {
       const oldest = coll.keys().next().value;
       if (oldest !== undefined) coll.delete(oldest);
@@ -93,7 +98,7 @@ export class MemoryStore implements Store {
 
   async set<T extends object>(path: string, id: string, data: T): Promise<void> {
     const coll = this.coll(path);
-    this.evictIfFull(coll, id);
+    this.evictIfFull(path, coll, id);
     coll.set(id, structuredClone(data));
   }
 

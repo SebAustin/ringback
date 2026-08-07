@@ -34,6 +34,9 @@ const TOOL_CALL_PREFIX = 'TOOL_CALL:';
 const TOOL_RESULT_PREFIX = 'TOOL_RESULT:';
 /** Whole Gemini tool loop must finish inside this budget (Twilio webhook ~15s). */
 const TOOL_LOOP_DEADLINE_MS = 10_000;
+/** The missed-call path runs inside a live Twilio voice webhook (15s hard cap):
+ * best-effort extras (owner alert) are skipped once this much has elapsed. */
+export const MISSED_CALL_BUDGET_MS = 8_000;
 /** No AI-initiated first-texts between 21:00 and 08:00 tenant-local (TCPA hygiene). */
 const QUIET_HOUR_START = 21;
 const QUIET_HOUR_END = 8;
@@ -57,14 +60,15 @@ export function nextMessageSeq(): number {
   return Date.now() * 1000 + seqCounter;
 }
 
-async function addMessage(
+/** The ONLY way to write a message — stamps the required `seq` ordering key. */
+export async function addMessage(
   tenantId: string,
   conversationId: string,
-  msg: Message,
+  msg: Omit<Message, 'seq'> & { seq?: number },
   fixedId?: string,
 ): Promise<boolean> {
   const store = getStore();
-  const doc = { ...msg, seq: msg.seq ?? nextMessageSeq() };
+  const doc: Message = { ...msg, seq: msg.seq ?? nextMessageSeq() };
   if (fixedId) return store.createIfAbsent(msgPath(tenantId, conversationId), fixedId, doc);
   await store.add(msgPath(tenantId, conversationId), doc);
   return true;
@@ -197,6 +201,7 @@ export async function startMissedCallConversation(opts: {
   callerPhone: string;
   callSid: string;
   now?: Date;
+  budgetMs?: number;
 }): Promise<{ conversationId: string | null; skipped?: string }> {
   const { tenantId, tenant, callerPhone, callSid } = opts;
   const store = getStore();
@@ -241,8 +246,17 @@ export async function startMissedCallConversation(opts: {
     textbackLatencyMs: Date.now() - t0,
   });
 
-  await notifyOwner(tenant, tenantId, ownerMissedCallAlert(tenant, maskPhone(callerPhone)));
+  // The caller-facing work is done — mark the event complete BEFORE the
+  // best-effort owner alert, and skip the alert if the Twilio webhook budget
+  // is nearly spent (R3). --no-cpu-throttling keeps post-response work alive.
   await completeEvent(eventId);
+  const budget = opts.budgetMs ?? MISSED_CALL_BUDGET_MS;
+  if (Date.now() - t0 <= budget) {
+    await notifyOwner(tenant, tenantId, ownerMissedCallAlert(tenant, maskPhone(callerPhone)));
+  } else {
+    // eslint-disable-next-line no-console
+    console.error(JSON.stringify({ severity: 'warning', msg: 'owner alert skipped — missed-call budget spent', tenantId, elapsedMs: Date.now() - t0 }));
+  }
   return { conversationId: conversation.id };
 }
 

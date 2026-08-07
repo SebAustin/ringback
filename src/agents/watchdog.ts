@@ -65,9 +65,9 @@ async function sweepTenant(
       closed++;
     } else if (conv.status === 'active' && idleMs > STUCK_MS) {
       // A caller message with no AI reply for 30+ min means something broke.
-      const msgs = await store.query<{ role: string; createdAt: string }>(
+      const msgs = await store.query<{ role: string; seq: number }>(
         `${convPath}/${conv.id}/messages`,
-        { orderBy: ['createdAt', 'desc'], limit: 1 },
+        { orderBy: ['seq', 'desc'], limit: 1 },
       );
       if (msgs[0]?.role === 'caller') {
         stuck++;
@@ -222,6 +222,14 @@ export async function runWatchdog(triggerDetail: string): Promise<{ runId: strin
       if (r.paused) paused++;
     }
     const purged = await purgeChurnedTenants(ctx);
+    // Sweep expired slot locks — past slots never need locking again (R2).
+    const staleLocks = await store.query<{ startsAt?: string }>('slot_locks', {
+      where: [['startsAt', '<', nowIso()]],
+      limit: 200,
+    });
+    for (const lock of staleLocks) {
+      await store.delete('slot_locks', lock.id);
+    }
     const metrics = await writeDailyMetrics(tenants);
     await ctx.log('daily-metrics', { result: JSON.stringify(metrics) });
     // Precompute the public /api/ops/summary payload (H10).

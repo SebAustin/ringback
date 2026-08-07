@@ -139,11 +139,20 @@ export async function executeTool(
       // win (check-then-act alone is racy across instances).
       const lockId = `${ctx.tenantId}:${slot.startsAt}`;
       const lockAcquired = await store.createIfAbsent('slot_locks', lockId, {
+        tenantId: ctx.tenantId,
+        startsAt: slot.startsAt,
         conversationId: ctx.conversationId,
         createdAt: nowIso(),
       });
       if (!lockAcquired) {
-        return { response: { ok: false, error: 'that slot was just taken — offer the customer the next open slot' } };
+        // Self-heal orphaned locks: a lock with no confirmed appointment behind
+        // it (failed write, cancellation) must not poison the slot forever (R2).
+        const stillBooked = (await loadBooked(ctx.tenantId)).some((b) => b.startsAt === slot.startsAt);
+        if (stillBooked) {
+          return { response: { ok: false, error: 'that slot was just taken — offer the customer the next open slot' } };
+        }
+        await store.delete('slot_locks', lockId);
+        return { response: { ok: false, error: 'that slot needed a refresh — call book_appointment once more to confirm it' } };
       }
       const appointment: Appointment = {
         tenantId: ctx.tenantId,
@@ -158,7 +167,13 @@ export async function executeTool(
         createdByAgent: true,
         createdAt: nowIso(),
       };
-      await store.add(`tenants/${ctx.tenantId}/appointments`, appointment);
+      try {
+        await store.add(`tenants/${ctx.tenantId}/appointments`, appointment);
+      } catch (err) {
+        // Release the lock or the slot is unbookable forever (R2).
+        await store.delete('slot_locks', lockId).catch(() => undefined);
+        throw err;
+      }
       await store.merge(`tenants/${ctx.tenantId}/conversations`, ctx.conversationId, {
         outcome: 'booked',
         callerName,
