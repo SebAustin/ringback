@@ -90,6 +90,8 @@ export interface Message {
   role: 'caller' | 'assistant' | 'owner' | 'system';
   body: string;
   createdAt: string;
+  /** Monotonic ordering key — createdAt alone collides within a millisecond. */
+  seq?: number;
   deliveryStatus?: string;
   geminiMeta?: {
     model: string;

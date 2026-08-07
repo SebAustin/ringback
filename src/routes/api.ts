@@ -97,11 +97,14 @@ export function registerApiRoutes(app: FastifyInstance): void {
     // Only send when the account exists — but always return ok (no user enumeration).
     if (isKnownFounder || tenants[0]) {
       const token = createMagicToken(normalized);
-      await sendEmail({
+      const sent = await sendEmail({
         to: normalized,
         subject: 'Your RingBack login link',
         text: `Click to log in (valid 15 minutes):\n${cfg.APP_BASE_URL}/api/auth/callback?token=${token}\n\nIf you didn't request this, ignore it.`,
       });
+      if (!sent.delivered) {
+        req.log.error({ email: normalized }, 'magic-link email delivery failed');
+      }
     }
     return { ok: true };
   });
@@ -201,7 +204,7 @@ export function registerApiRoutes(app: FastifyInstance): void {
     if (!conversation) return reply.code(404).send({ error: 'not found' });
     const messages = await getStore().query<Message>(
       `tenants/${ctx.tenantId}/conversations/${id}/messages`,
-      { orderBy: ['createdAt', 'asc'], limit: 200 },
+      { orderBy: ['seq', 'asc'], limit: 200 },
     );
     return { conversation, messages };
   });

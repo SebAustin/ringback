@@ -34,6 +34,12 @@ describe('health & static', () => {
   });
 });
 
+/** The browser carries the demo-session cookie set by /start (M7 binding). */
+function demoCookie(start: { cookies: { name: string; value: string }[] }): Record<string, string> {
+  const c = start.cookies.find((x) => x.name === 'rb_demo');
+  return c ? { rb_demo: c.value } : {};
+}
+
 describe('demo simulator (the judge path)', () => {
   test('start → chat → booking, all through the real pipeline', async () => {
     const start = await app.inject({ method: 'POST', url: '/api/demo/start', payload: {} });
@@ -41,11 +47,13 @@ describe('demo simulator (the judge path)', () => {
     const { conversationId, tenant } = start.json();
     expect(tenant.name).toBe('Luxe Cuts Salon');
     expect(conversationId).toBeTruthy();
+    const cookies = demoCookie(start);
 
     const m1 = await app.inject({
       method: 'POST',
       url: '/api/demo/message',
       payload: { conversationId, text: 'Can I book a cut this week?' },
+      cookies,
     });
     expect(m1.statusCode).toBe(200);
     const msgs1 = m1.json().messages;
@@ -55,10 +63,23 @@ describe('demo simulator (the judge path)', () => {
       method: 'POST',
       url: '/api/demo/message',
       payload: { conversationId, text: 'My name is Jordan' },
+      cookies,
     });
     expect(m2.statusCode).toBe(200);
     expect(m2.json().booked).toBeTruthy();
     expect(m2.json().booked.service).toBeTruthy();
+  });
+
+  test('a demo session cannot touch another session\'s conversation', async () => {
+    const a = await app.inject({ method: 'POST', url: '/api/demo/start', payload: {} });
+    const b = await app.inject({ method: 'POST', url: '/api/demo/start', payload: {} });
+    const hijack = await app.inject({
+      method: 'POST',
+      url: '/api/demo/message',
+      payload: { conversationId: a.json().conversationId, text: 'hi' },
+      cookies: demoCookie(b),
+    });
+    expect(hijack.statusCode).toBe(403);
   });
 
   test('validates input', async () => {
@@ -77,6 +98,7 @@ describe('demo simulator (the judge path)', () => {
       method: 'POST',
       url: '/api/demo/message',
       payload: { conversationId, text: 'hello!' },
+      cookies: demoCookie(start),
     });
     const runs = await app.inject({ method: 'GET', url: '/api/ops/runs' });
     expect(runs.statusCode).toBe(200);

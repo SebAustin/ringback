@@ -1,15 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import type { AgentRun, Conversation, Message, MetricsDaily, Prospect, Tenant, WeeklyReport } from '../types.js';
+import type { AgentRun, Conversation, Message, Prospect, Tenant } from '../types.js';
 import { cfg } from '../config.js';
 import { getStore, type WithId } from '../lib/store.js';
 import { isoDateOnly } from '../lib/time.js';
-import { getSessionUser, isFounder } from '../lib/auth.js';
-import { computeMrrUsd } from '../agents/watchdog.js';
-import { resolveApproval } from '../agents/runner.js';
-import { runAgent } from '../agents/runner.js';
+import { getSessionUser, isFounder, signToken, verifyToken } from '../lib/auth.js';
+import { persistOpsSummary, type OpsSummary } from '../lib/ops-summary.js';
+import { resolveApproval, runAgent } from '../agents/runner.js';
 import { ensureDemoTenant } from '../demo-seed.js';
-import { handleInboundMessage, findOrCreateConversation } from '../receptionist/conversation.js';
+import { handleInboundMessage, findOrCreateConversation, nextMessageSeq } from '../receptionist/conversation.js';
 import { textbackGreeting } from '../receptionist/prompts.js';
 import { nowIso } from '../lib/time.js';
 
@@ -44,62 +43,39 @@ function redactRun(run: WithId<AgentRun>): WithId<AgentRun> {
       response: isPrivate ? '[redacted]' : t.response && redactText(t.response),
       result: t.result ? redactText(t.result) : undefined,
     })),
-    actions: run.actions.map((a) => ({ ...a, payload: JSON.parse(redactText(JSON.stringify(a.payload))) })),
+    actions: run.actions.map((a) => ({ ...a, payload: redactPayload(a.payload) as Record<string, unknown> })),
   };
+}
+
+/** Redact by walking the object and rewriting STRING leaves only — regexing a
+ * serialized JSON blob can corrupt numeric literals into invalid JSON (M1). */
+function redactPayload(value: unknown): unknown {
+  if (typeof value === 'string') return redactText(value);
+  if (Array.isArray(value)) return value.map(redactPayload);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redactPayload(v)]));
+  }
+  return value;
 }
 
 export function registerOpsRoutes(app: FastifyInstance): void {
   // ── Public, read-only operations dashboard data ────────────────────────────
+  // Served from the watchdog-precomputed doc + a short in-process cache — a
+  // public endpoint must never fan out N+1 Firestore reads per request (H10).
+  let summaryCache: { value: OpsSummary; at: number } | null = null;
+  const SUMMARY_CACHE_MS = 30_000;
+
   app.get('/api/ops/summary', async () => {
-    const store = getStore();
-    const weekAgo = isoDateOnly(new Date(Date.now() - 7 * 86_400_000));
-    const days = await store.query<MetricsDaily>('metrics_daily', {
-      where: [['date', '>=', weekAgo]],
-    });
-    const tenants = await store.query<Tenant>('tenants', {});
-    const runs = await store.query<AgentRun>('agent_runs', { limit: 1000 });
-
-    let resolved = 0;
-    let withOutcome = 0;
-    for (const t of tenants) {
-      const convs = await store.query<Conversation>(`tenants/${t.id}/conversations`, {
-        where: [['lastMessageAt', '>=', `${weekAgo}T00:00:00.000Z`]],
-        limit: 200,
-      });
-      for (const c of convs) {
-        if (c.outcome) {
-          withOutcome++;
-          if (['booked', 'answered_faq', 'qualified'].includes(c.outcome)) resolved++;
-        }
-      }
+    if (summaryCache && Date.now() - summaryCache.at < SUMMARY_CACHE_MS) {
+      return summaryCache.value;
     }
-
-    const reports = await store.query<WeeklyReport>('reports', {
-      orderBy: ['weekOf', 'desc'],
-      limit: 1,
-    });
-
-    const allActions = runs.flatMap((r) => r.actions);
-    return {
-      kpis: {
-        mrrUsd: await computeMrrUsd(tenants),
-        activeTenants: tenants.filter((t) => t.status === 'live').length,
-        conversations7d: days.reduce((s, d) => s + d.conversations, 0),
-        bookings7d: days.reduce((s, d) => s + d.bookings, 0),
-        aiResolutionRate: withOutcome > 0 ? resolved / withOutcome : 0,
-        totalAgentRuns: runs.length,
-        autonomousActions: allActions.filter((a) => a.executed && !a.requiresApproval).length,
-        humanApprovals: allActions.filter((a) => a.approvedAt).length,
-      },
-      latestReport: reports[0]
-        ? {
-            weekOf: reports[0].weekOf,
-            narrative: reports[0].narrative,
-            mrrUsd: reports[0].mrrUsd,
-            totals: reports[0].totals,
-          }
-        : null,
-    };
+    const stored = await getStore().get<OpsSummary>('ops_summary', 'current');
+    const fresh =
+      stored && Date.now() - new Date(stored.computedAt).getTime() < 20 * 60_000
+        ? stored
+        : await persistOpsSummary();
+    summaryCache = { value: fresh, at: Date.now() };
+    return fresh;
   });
 
   app.get('/api/ops/runs', async (req) => {
@@ -163,7 +139,7 @@ export function registerOpsRoutes(app: FastifyInstance): void {
   // ── Public demo simulator (same pipeline, web_sim channel) ─────────────────
   app.post('/api/demo/start', {
     config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
-  }, async () => {
+  }, async (_req, reply) => {
     const tenantId = await ensureDemoTenant();
     const store = getStore();
     const tenant = (await store.get<Tenant>('tenants', tenantId))!;
@@ -180,6 +156,15 @@ export function registerOpsRoutes(app: FastifyInstance): void {
       role: 'assistant',
       body: greeting,
       createdAt: nowIso(),
+      seq: nextMessageSeq(),
+    });
+    // Bind the demo conversation to this browser session — no cross-session
+    // read/write of someone else's demo thread (M7).
+    reply.setCookie('rb_demo', signToken({ cid: conversation.id, kind: 'demo' }, 24 * 3600), {
+      path: '/',
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: cfg.APP_BASE_URL.startsWith('https'),
     });
     return {
       conversationId: conversation.id,
@@ -200,6 +185,13 @@ export function registerOpsRoutes(app: FastifyInstance): void {
       .safeParse(req.body ?? {});
     if (!parsed.success) return reply.code(400).send({ error: 'invalid input' });
     const { conversationId, text } = parsed.data;
+
+    const demoToken = verifyToken<{ cid: string; kind: string }>(
+      String((req.cookies ?? {}).rb_demo ?? ''),
+    );
+    if (!demoToken || demoToken.kind !== 'demo' || demoToken.cid !== conversationId) {
+      return reply.code(403).send({ error: 'demo session mismatch — refresh to restart' });
+    }
 
     const tenantId = cfg.DEMO_TENANT_ID;
     const store = getStore();
@@ -248,7 +240,7 @@ export function registerOpsRoutes(app: FastifyInstance): void {
 
     const messages = await store.query<Message>(
       `tenants/${tenantId}/conversations/${conversationId}/messages`,
-      { orderBy: ['createdAt', 'asc'], limit: 100 },
+      { orderBy: ['seq', 'asc'], limit: 100 },
     );
     return {
       messages: messages

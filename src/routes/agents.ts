@@ -52,29 +52,39 @@ export function registerAgentRoutes(app: FastifyInstance): void {
     return true;
   };
 
+  // Failed runs MUST surface as 5xx so Cloud Scheduler retries and alerts —
+  // a watchdog that fails silently is worse than no watchdog (H9).
+  const respond = (
+    reply: { code: (n: number) => { send: (b: unknown) => unknown } },
+    result: { runId: string; summary: string; status: string },
+  ) => {
+    if (result.status === 'failed') return reply.code(500).send(result);
+    return result;
+  };
+
   app.post('/agents/watchdog', async (req, reply) => {
     if (!(await guard(req, reply))) return;
-    return runWatchdog('cloud-scheduler:watchdog-15min');
+    return respond(reply, await runWatchdog('cloud-scheduler:watchdog-15min'));
   });
 
   app.post('/agents/cfo', async (req, reply) => {
     if (!(await guard(req, reply))) return;
-    return runCfo('cloud-scheduler:cfo-weekly');
+    return respond(reply, await runCfo('cloud-scheduler:cfo-weekly'));
   });
 
   app.post('/agents/qa', async (req, reply) => {
     if (!(await guard(req, reply))) return;
-    return runQa('cloud-scheduler:qa-nightly');
+    return respond(reply, await runQa('cloud-scheduler:qa-nightly'));
   });
 
   app.post('/agents/prospector', async (req, reply) => {
     if (!(await guard(req, reply))) return;
-    return runProspector('cloud-scheduler:prospector-daily');
+    return respond(reply, await runProspector('cloud-scheduler:prospector-daily'));
   });
 
   app.post('/agents/onboarding', async (req, reply) => {
     if (!(await guard(req, reply))) return;
-    return runOnboardingCheckins('cloud-scheduler:onboarding-checkin');
+    return respond(reply, await runOnboardingCheckins('cloud-scheduler:onboarding-checkin'));
   });
 
   // SendGrid Inbound Parse → support agent. Multipart/urlencoded form fields.
@@ -87,10 +97,12 @@ export function registerAgentRoutes(app: FastifyInstance): void {
     const fromRaw = body.from ?? '';
     const fromEmail = (fromRaw.match(/<([^>]+)>/)?.[1] ?? fromRaw).trim().toLowerCase();
     if (!fromEmail) return reply.code(400).send({ error: 'missing from' });
-    return runSupport({
+    const result = await runSupport({
       fromEmail,
       subject: (body.subject ?? '(no subject)').slice(0, 300),
       body: (body.text ?? body.html ?? '').slice(0, 8000),
     });
+    if (result.status === 'failed') return reply.code(500).send(result);
+    return result;
   });
 }

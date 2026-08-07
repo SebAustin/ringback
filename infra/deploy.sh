@@ -26,6 +26,7 @@ gcloud run deploy "${SERVICE}" \
   --project "${PROJECT_ID}" \
   --allow-unauthenticated \
   --cpu-boost \
+  --no-cpu-throttling \
   --min-instances=0 \
   --max-instances=3 \
   --memory=512Mi \

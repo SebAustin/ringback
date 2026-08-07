@@ -4,6 +4,9 @@ import type { Tenant } from '../types.js';
 import { constructWebhookEvent, planForPrice, stripeConfigured } from '../lib/stripe.js';
 import { getStore } from '../lib/store.js';
 import { nowIso } from '../lib/time.js';
+import { claimEvent, completeEvent } from '../lib/events.js';
+import { sendSms } from '../lib/twilio.js';
+import { cfg } from '../config.js';
 import { runOnboarding } from '../agents/onboarding.js';
 
 /**
@@ -31,19 +34,19 @@ export function registerStripeRoutes(app: FastifyInstance): void {
       }
 
       const store = getStore();
-      // Idempotency across Stripe retries.
-      const fresh = await store.createIfAbsent('events', `stripe_${event.id}`, {
-        type: event.type,
-        createdAt: nowIso(),
-      });
-      if (!fresh) return { received: true, duplicate: true };
+      // Two-phase idempotency: the marker only flips to done AFTER successful
+      // processing, so a mid-work crash lets Stripe's retry re-run it (C4).
+      const eventKey = `stripe_${event.id}`;
+      if (!(await claimEvent(eventKey, 5 * 60_000))) {
+        return { received: true, duplicate: true };
+      }
 
       switch (event.type) {
         case 'checkout.session.completed': {
           const session = event.data.object;
           const email = session.customer_details?.email ?? session.customer_email;
           if (!email) break;
-          await runOnboarding({
+          const onboarding = await runOnboarding({
             businessName: session.metadata?.businessName ?? 'New business',
             email,
             website: session.metadata?.website || undefined,
@@ -52,6 +55,17 @@ export function registerStripeRoutes(app: FastifyInstance): void {
             stripeSubId:
               typeof session.subscription === 'string' ? session.subscription : undefined,
           });
+          if (onboarding.status === 'failed') {
+            // A charged customer with no service is a page-the-founder event.
+            // 5xx → Stripe retries; marker stays 'processing' so the retry re-runs.
+            if (cfg.FOUNDER_PHONE) {
+              await sendSms({
+                to: cfg.FOUNDER_PHONE,
+                body: `RingBack URGENT: onboarding FAILED for paid checkout (${email}). Run ${onboarding.runId}. Stripe will retry.`,
+              }).catch(() => undefined);
+            }
+            return reply.code(500).send({ error: 'onboarding failed — will retry' });
+          }
           break;
         }
         case 'customer.subscription.updated':
@@ -88,6 +102,7 @@ export function registerStripeRoutes(app: FastifyInstance): void {
         default:
           break;
       }
+      await completeEvent(eventKey);
       return { received: true };
     });
   });

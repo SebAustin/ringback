@@ -3,8 +3,12 @@ import { getStore } from '../lib/store.js';
 import { nowIso } from '../lib/time.js';
 import { generate, type GenerateOpts, type GenResult } from '../lib/gemini.js';
 
-const TRANSCRIPT_FIELD_MAX = 4_000;
+const TRANSCRIPT_FIELD_MAX = 2_000;
 const TRANSCRIPT_MAX_STEPS = 60;
+/** Hard cap on serialized transcript bytes — Firestore docs max out at 1MB. */
+const TRANSCRIPT_MAX_BYTES = 200_000;
+/** Persist intermediate progress at most every N steps (final state always persists). */
+const PERSIST_EVERY_STEPS = 3;
 
 export interface AgentContext {
   runId: string;
@@ -56,14 +60,40 @@ export async function runAgent(
     costUsd,
     publicSummary: `${agent} run started`,
   };
-  const runId = await store.add('agent_runs', run);
 
-  const persist = async (): Promise<void> => {
-    await store.merge('agent_runs', runId, {
-      transcript: transcript.slice(0, TRANSCRIPT_MAX_STEPS),
-      actions,
-      costUsd,
-    });
+  // The evidence log must never take the product down: if the run record
+  // can't be created (store blip), do the work anyway and log the gap.
+  let runId = 'unrecorded';
+  try {
+    runId = await store.add('agent_runs', run);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(JSON.stringify({ severity: 'error', msg: 'agent_runs create failed', agent, err: String(err) }));
+  }
+  const recorded = runId !== 'unrecorded';
+
+  /** Bounded transcript: cap steps AND serialized bytes (Firestore 1MB doc limit). */
+  const boundedTranscript = (): TranscriptStep[] => {
+    let steps = transcript.slice(-TRANSCRIPT_MAX_STEPS);
+    while (steps.length > 1 && JSON.stringify(steps).length > TRANSCRIPT_MAX_BYTES) {
+      steps = steps.slice(Math.ceil(steps.length / 4));
+    }
+    return steps;
+  };
+
+  const persist = async (force = false): Promise<void> => {
+    if (!recorded) return;
+    if (!force && transcript.length % PERSIST_EVERY_STEPS !== 0) return;
+    try {
+      await store.merge('agent_runs', runId, {
+        transcript: boundedTranscript(),
+        actions,
+        costUsd,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(JSON.stringify({ severity: 'warning', msg: 'agent_runs persist failed', runId, err: String(err) }));
+    }
   };
 
   const ctx: AgentContext = {
@@ -99,36 +129,40 @@ export async function runAgent(
         executed = true;
       }
       actions.push({ type, payload, executed, requiresApproval });
-      await persist();
+      await persist(true);
     },
     addCost(kind, usd) {
       costUsd[kind] += usd;
     },
   };
 
+  const finalize = async (fields: Record<string, unknown>): Promise<void> => {
+    if (!recorded) return;
+    try {
+      await store.merge('agent_runs', runId, {
+        finishedAt: nowIso(),
+        durationMs: Date.now() - start,
+        transcript: boundedTranscript(),
+        actions,
+        costUsd,
+        ...fields,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(JSON.stringify({ severity: 'error', msg: 'agent_runs finalize failed', runId, err: String(err) }));
+    }
+  };
+
   try {
     const summary = await fn(ctx);
     const pendingApproval = actions.some((a) => a.requiresApproval && !a.executed);
     const status: AgentRun['status'] = pendingApproval ? 'awaiting_approval' : 'succeeded';
-    await store.merge('agent_runs', runId, {
-      status,
-      finishedAt: nowIso(),
-      durationMs: Date.now() - start,
-      transcript: transcript.slice(0, TRANSCRIPT_MAX_STEPS),
-      actions,
-      costUsd,
-      publicSummary: summary,
-    });
+    await finalize({ status, publicSummary: summary });
     return { runId, status, summary };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await store.merge('agent_runs', runId, {
+    await finalize({
       status: 'failed',
-      finishedAt: nowIso(),
-      durationMs: Date.now() - start,
-      transcript: transcript.slice(0, TRANSCRIPT_MAX_STEPS),
-      actions,
-      costUsd,
       error: message.slice(0, 500),
       publicSummary: `${agent} run failed: ${message.slice(0, 120)}`,
     });

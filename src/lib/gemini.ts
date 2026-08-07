@@ -1,5 +1,9 @@
 import { GoogleGenAI, type FunctionDeclaration, type Content } from '@google/genai';
 import { cfg, geminiMock } from '../config.js';
+import { retryOnce, withTimeout } from './async.js';
+
+/** Webhook-bound flash calls get a tight budget; pro (cron reports) can run longer. */
+const TIMEOUT_MS: Record<ModelKey, number> = { flash: 8_000, pro: 30_000 };
 
 export const MODELS = {
   flash: 'gemini-2.5-flash',
@@ -53,17 +57,25 @@ function getClient(): GoogleGenAI {
 export async function generate(opts: GenerateOpts): Promise<GenResult> {
   if (geminiMock) return mockGenerate(opts);
 
-  const res = await getClient().models.generateContent({
-    model: MODELS[opts.model],
-    contents: opts.contents,
-    config: {
-      systemInstruction: opts.system,
-      temperature: opts.temperature ?? 0.4,
-      ...(opts.tools && opts.tools.length > 0
-        ? { tools: [{ functionDeclarations: opts.tools }] }
-        : {}),
-    },
-  });
+  const res = await retryOnce(
+    () =>
+      withTimeout(
+        getClient().models.generateContent({
+          model: MODELS[opts.model],
+          contents: opts.contents,
+          config: {
+            systemInstruction: opts.system,
+            temperature: opts.temperature ?? 0.4,
+            ...(opts.tools && opts.tools.length > 0
+              ? { tools: [{ functionDeclarations: opts.tools }] }
+              : {}),
+          },
+        }),
+        TIMEOUT_MS[opts.model],
+        `gemini:${opts.model}`,
+      ),
+    `gemini:${opts.model}`,
+  );
 
   const inTokens = res.usageMetadata?.promptTokenCount ?? 0;
   const outTokens =

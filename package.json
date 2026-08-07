@@ -2,7 +2,7 @@
   "name": "ringback",
   "version": "0.1.0",
   "private": true,
-  "description": "RingBack \u2014 AI receptionist for local businesses. Missed-call textback, Gemini-powered SMS conversations, bookings, and an AI operations layer.",
+  "description": "RingBack — AI receptionist for local businesses. Missed-call textback, Gemini-powered SMS conversations, bookings, and an AI operations layer.",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -23,6 +23,7 @@
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
     "@fastify/formbody": "^8.0.2",
+    "@fastify/multipart": "^9.4.0",
     "@fastify/rate-limit": "^11.1.0",
     "@fastify/static": "^10.1.2",
     "@google/genai": "^1.9.0",

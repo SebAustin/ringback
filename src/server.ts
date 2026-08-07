@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fastifyCookie from '@fastify/cookie';
 import fastifyFormbody from '@fastify/formbody';
+import fastifyMultipart from '@fastify/multipart';
 import fastifyRateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import { assertProdConfig, cfg, isTest } from './config.js';
@@ -16,6 +17,13 @@ import { ensureDemoTenant } from './demo-seed.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// A rejected floating promise must never take the instance (and every
+// in-flight webhook) down with it. Log loudly, keep serving.
+process.on('unhandledRejection', (reason) => {
+  // eslint-disable-next-line no-console
+  console.error(JSON.stringify({ severity: 'error', msg: 'unhandledRejection', reason: String(reason) }));
+});
+
 export async function buildApp() {
   const app = Fastify({
     logger: isTest
@@ -26,15 +34,35 @@ export async function buildApp() {
           formatters: { level: (label) => ({ severity: label }) },
         },
     trustProxy: true,
-    bodyLimit: 1024 * 256,
+    bodyLimit: 1024 * 1024,
   });
 
   await app.register(fastifyCookie);
   await app.register(fastifyFormbody);
+  // SendGrid Inbound Parse posts multipart/form-data.
+  await app.register(fastifyMultipart, {
+    attachFieldsToBody: 'keyValues',
+    limits: { fileSize: 2 * 1024 * 1024, files: 3, fields: 40 },
+  });
   await app.register(fastifyRateLimit, {
     global: true,
     max: 300,
     timeWindow: '1 minute',
+    // Twilio/Stripe webhooks are signature-authenticated; a burst of carrier
+    // callbacks must never be 429'd into lost calls.
+    allowList: (req) => (req.url ?? '').startsWith('/webhooks/twilio') || (req.url ?? '').startsWith('/webhooks/stripe'),
+  });
+
+  // Uniform error handling: Twilio webhooks degrade to valid empty TwiML so a
+  // store blip never plays a carrier error to a live caller (H13).
+  app.setErrorHandler((err, req, reply) => {
+    req.log.error({ err, url: req.url }, 'request failed');
+    if ((req.url ?? '').startsWith('/webhooks/twilio')) {
+      return reply.code(200).type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?>\n<Response/>');
+    }
+    const e = err as { statusCode?: number; message?: string };
+    const status = e.statusCode && e.statusCode >= 400 ? e.statusCode : 500;
+    return reply.code(status).send({ error: status === 500 ? 'internal error' : (e.message ?? 'error') });
   });
 
   // Security headers on every response (CSP allows only same-origin assets).
@@ -76,9 +104,35 @@ export async function buildApp() {
   return app;
 }
 
+/** Fail fast and loudly at boot if a required composite index is missing —
+ * otherwise the first production SMS dies invisibly (C3). */
+async function verifyIndexes(): Promise<void> {
+  const { getStore } = await import('./lib/store.js');
+  const probes: [string, Parameters<ReturnType<typeof getStore>['query']>[1]][] = [
+    [`tenants/${cfg.DEMO_TENANT_ID}/appointments`, { where: [['status', '==', 'confirmed'], ['startsAt', '>=', '2020-01-01']] , limit: 1 }],
+    ['sms_out', { where: [['tenantId', '==', 'probe'], ['createdAt', '>=', '2020-01-01']], limit: 1 }],
+    ['agent_runs', { where: [['status', '==', 'awaiting_approval']], orderBy: ['startedAt', 'desc'], limit: 1 }],
+    ['agent_runs', { where: [['trigger.detail', '==', 'probe'], ['startedAt', '>=', '2020-01-01']], limit: 1 }],
+    ['tenants', { where: [['ownerEmail', '==', 'probe@probe.invalid']], orderBy: ['createdAt', 'desc'], limit: 1 }],
+    ['prospects', { where: [['status', '==', 'drafted']], orderBy: ['createdAt', 'desc'], limit: 1 }],
+  ];
+  for (const [path, q] of probes) {
+    try {
+      await getStore().query(path, q);
+    } catch (err) {
+      throw new Error(
+        `Missing Firestore index for query on "${path}" — run infra/setup.sh (indexes step) and wait for builds to finish. Underlying: ${String(err)}`,
+      );
+    }
+  }
+}
+
 async function main(): Promise<void> {
   assertProdConfig();
-  if (cfg.STORE === 'firestore') initFirestoreStore();
+  if (cfg.STORE === 'firestore') {
+    initFirestoreStore();
+    await verifyIndexes();
+  }
   await ensureDemoTenant();
 
   const app = await buildApp();

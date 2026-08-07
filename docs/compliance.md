@@ -14,9 +14,10 @@
   including new conversations and missed-call textbacks). START re-subscribes.
   Twilio Advanced Opt-Out should be enabled as a carrier-level backstop.
 - **HELP** returns business identification and contact guidance.
-- **Quiet hours.** The textback replies to a live call (the caller is
-  demonstrably awake and phone-in-hand); scheduled/agent-initiated messages
-  (check-ins) go by email instead of SMS.
+- **Quiet hours.** Enforced in code: no AI textback between 21:00 and 08:00
+  tenant-local time — the owner is still alerted, and the caller is texted the
+  next business morning by the owner or a fresh call. Scheduled/agent-initiated
+  messages (check-ins) go by email instead of SMS.
 - **A2P registration.** Production traffic runs on a verified toll-free number
   and/or a registered 10DLC campaign ("customer care / appointment booking"
   use case). Both registrations are submitted on day 1 — see runbook.

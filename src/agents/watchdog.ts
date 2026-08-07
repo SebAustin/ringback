@@ -2,13 +2,20 @@ import type { Conversation, MetricsDaily, Tenant } from '../types.js';
 import { getStore, type WithId } from '../lib/store.js';
 import { isoDateOnly, nowIso } from '../lib/time.js';
 import { segmentsUsedToday } from '../receptionist/guardrails.js';
+import { releaseActiveConversation } from '../receptionist/conversation.js';
 import { PLAN_PRICES_USD } from '../lib/stripe.js';
 import { sendSms } from '../lib/twilio.js';
+import { persistOpsSummary } from '../lib/ops-summary.js';
 import { cfg } from '../config.js';
 import { runAgent, type AgentContext } from './runner.js';
 
 const IDLE_CLOSE_MS = 24 * 3600_000;
 const STUCK_MS = 30 * 60_000;
+/** Work caps per run — a sweep must always finish inside one request (H11).
+ * Leftovers are picked up by the next 15-min run. */
+const MAX_CLOSES_PER_RUN = 50;
+const MAX_ACTIVE_SCANNED_PER_TENANT = 200;
+const MAX_PURGE_DELETES_PER_RUN = 300;
 
 function inferOutcome(c: Conversation): Conversation['outcome'] {
   if (c.outcome) return c.outcome;
@@ -18,6 +25,7 @@ function inferOutcome(c: Conversation): Conversation['outcome'] {
 async function sweepTenant(
   ctx: AgentContext,
   tenant: WithId<Tenant>,
+  closeBudget: { remaining: number },
 ): Promise<{ closed: number; stuck: number; paused: boolean }> {
   const store = getStore();
   const convPath = `tenants/${tenant.id}/conversations`;
@@ -26,27 +34,34 @@ async function sweepTenant(
 
   const active = await store.query<Conversation>(convPath, {
     where: [['status', 'in', ['active', 'escalated']]],
+    limit: MAX_ACTIVE_SCANNED_PER_TENANT,
   });
 
   for (const conv of active) {
     const idleMs = Date.now() - new Date(conv.lastMessageAt).getTime();
-    if (idleMs > IDLE_CLOSE_MS) {
+    if (idleMs > IDLE_CLOSE_MS && closeBudget.remaining > 0) {
+      closeBudget.remaining--;
+      // Skip the LLM for trivial threads — a one-message conversation
+      // doesn't need a Gemini summary.
       const summary =
         conv.summary ??
-        (
-          await ctx.gemini({
-            model: 'flash',
-            system: 'Summarize this SMS conversation in one sentence for the business owner.',
-            contents: [{ role: 'user', parts: [{ text: `Conversation with ${conv.turnCount} turns, outcome so far: ${conv.outcome ?? 'none'}.` }] }],
-            mockKind: 'summary',
-            stepName: 'summarize-idle-conversation',
-          })
-        ).text;
+        (conv.turnCount <= 1
+          ? 'Caller did not continue the conversation.'
+          : (
+              await ctx.gemini({
+                model: 'flash',
+                system: 'Summarize this SMS conversation in one sentence for the business owner.',
+                contents: [{ role: 'user', parts: [{ text: `Conversation with ${conv.turnCount} turns, outcome so far: ${conv.outcome ?? 'none'}.` }] }],
+                mockKind: 'summary',
+                stepName: 'summarize-idle-conversation',
+              })
+            ).text);
       await store.merge(convPath, conv.id, {
         status: 'closed',
         outcome: inferOutcome(conv),
         summary: summary.slice(0, 300),
       });
+      await releaseActiveConversation(tenant.id, conv.callerPhone);
       closed++;
     } else if (conv.status === 'active' && idleMs > STUCK_MS) {
       // A caller message with no AI reply for 30+ min means something broke.
@@ -148,34 +163,49 @@ async function writeDailyMetrics(tenants: WithId<Tenant>[]): Promise<MetricsDail
 
 const CHURN_PURGE_MS = 30 * 86_400_000;
 
-/** GDPR-hygiene: purge conversation data 30 days after a tenant churns. */
+/** GDPR-hygiene: purge conversation data 30 days after a tenant churns.
+ * Bounded per run and resumable — a tenant with more data than one run's
+ * budget completes across successive runs; purgedAt is set only when the
+ * tenant has zero conversations left (H11). */
 async function purgeChurnedTenants(ctx: AgentContext): Promise<number> {
   const store = getStore();
   const churned = await store.query<Tenant & { purgedAt?: string; churnedAt?: string }>('tenants', {
     where: [['status', '==', 'churned']],
+    limit: 20,
   });
   let purged = 0;
+  let deleteBudget = MAX_PURGE_DELETES_PER_RUN;
   for (const t of churned) {
-    if (t.purgedAt) continue;
+    if (t.purgedAt || deleteBudget <= 0) continue;
     const churnedAt = new Date(t.churnedAt ?? t.createdAt).getTime();
     if (Date.now() - churnedAt < CHURN_PURGE_MS) continue;
-    const convs = await store.query<Conversation>(`tenants/${t.id}/conversations`, {});
+    const convs = await store.query<Conversation>(`tenants/${t.id}/conversations`, { limit: 100 });
+    let deletedAll = true;
     for (const conv of convs) {
-      const msgs = await store.query(`tenants/${t.id}/conversations/${conv.id}/messages`, {});
-      for (const m of msgs) await store.delete(`tenants/${t.id}/conversations/${conv.id}/messages`, m.id);
+      if (deleteBudget <= 0) {
+        deletedAll = false;
+        break;
+      }
+      const msgs = await store.query(`tenants/${t.id}/conversations/${conv.id}/messages`, { limit: 200 });
+      for (const m of msgs) {
+        await store.delete(`tenants/${t.id}/conversations/${conv.id}/messages`, m.id);
+        deleteBudget--;
+      }
       await store.delete(`tenants/${t.id}/conversations`, conv.id);
     }
-    await store.merge('tenants', t.id, { purgedAt: nowIso() });
-    purged++;
-    await ctx.action('purge_churned_tenant_data', { tenantId: t.id, conversations: convs.length }, {
-      execute: async () => undefined,
-    });
+    if (deletedAll && convs.length < 100) {
+      await store.merge('tenants', t.id, { purgedAt: nowIso() });
+      purged++;
+      await ctx.action('purge_churned_tenant_data', { tenantId: t.id, conversations: convs.length }, {
+        execute: async () => undefined,
+      });
+    }
   }
   return purged;
 }
 
 /** Every-15-min sweep: close idle threads, flag stuck ones, enforce budgets, refresh daily metrics. */
-export async function runWatchdog(triggerDetail: string): Promise<{ runId: string; summary: string }> {
+export async function runWatchdog(triggerDetail: string): Promise<{ runId: string; summary: string; status: string }> {
   const result = await runAgent('watchdog', { type: 'cron', detail: triggerDetail }, undefined, async (ctx) => {
     const store = getStore();
     const tenants = await store.query<Tenant>('tenants', {
@@ -184,8 +214,9 @@ export async function runWatchdog(triggerDetail: string): Promise<{ runId: strin
     let closed = 0;
     let stuck = 0;
     let paused = 0;
+    const closeBudget = { remaining: MAX_CLOSES_PER_RUN };
     for (const tenant of tenants) {
-      const r = await sweepTenant(ctx, tenant);
+      const r = await sweepTenant(ctx, tenant, closeBudget);
       closed += r.closed;
       stuck += r.stuck;
       if (r.paused) paused++;
@@ -193,7 +224,9 @@ export async function runWatchdog(triggerDetail: string): Promise<{ runId: strin
     const purged = await purgeChurnedTenants(ctx);
     const metrics = await writeDailyMetrics(tenants);
     await ctx.log('daily-metrics', { result: JSON.stringify(metrics) });
+    // Precompute the public /api/ops/summary payload (H10).
+    await persistOpsSummary();
     return `Watchdog swept ${tenants.length} tenants: ${closed} idle conversations closed, ${stuck} stuck flagged, ${paused} paused for budget${purged > 0 ? `, ${purged} churned tenants purged` : ''}. Today: ${metrics.conversations} conversations, ${metrics.bookings} bookings.`;
   });
-  return { runId: result.runId, summary: result.summary };
+  return { runId: result.runId, summary: result.summary, status: result.status };
 }

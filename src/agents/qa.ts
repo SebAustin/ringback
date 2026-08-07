@@ -18,7 +18,7 @@ Also list concrete issues (empty array if none) and one-line notes.
 Respond as JSON: {"score": n, "issues": ["..."], "notes": "..."}`;
 
 /** Nightly QA: score yesterday's conversations, propose prompt fixes as gated suggestions. */
-export async function runQa(triggerDetail: string): Promise<{ runId: string; summary: string }> {
+export async function runQa(triggerDetail: string): Promise<{ runId: string; summary: string; status: string }> {
   const result = await runAgent('qa', { type: 'cron', detail: triggerDetail }, undefined, async (ctx) => {
     const store = getStore();
     const since = new Date(Date.now() - 24 * 3600_000).toISOString();
@@ -36,7 +36,7 @@ export async function runQa(triggerDetail: string): Promise<{ runId: string; sum
         if (scored >= 20) break;
         const messages = await store.query<Message>(
           `tenants/${tenant.id}/conversations/${conv.id}/messages`,
-          { orderBy: ['createdAt', 'asc'], limit: 40 },
+          { orderBy: ['seq', 'asc'], limit: 40 },
         );
         const transcript = messages
           .filter((m) => m.role === 'caller' || m.role === 'assistant')
@@ -80,7 +80,7 @@ export async function runQa(triggerDetail: string): Promise<{ runId: string; sum
 
     return `QA reviewed ${scored} conversations: ${flagged} flagged, ${allIssues.length} issues${allIssues.length > 0 ? ' (prompt suggestion queued for approval)' : ''}.`;
   });
-  return { runId: result.runId, summary: result.summary };
+  return { runId: result.runId, summary: result.summary, status: result.status };
 }
 
 registerApprovalExecutor('prompt_suggestion', async (payload) => {

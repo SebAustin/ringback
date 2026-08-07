@@ -1,5 +1,5 @@
 import { initializeApp, getApps, applicationDefault } from 'firebase-admin/app';
-import { getFirestore, Firestore } from 'firebase-admin/firestore';
+import { getFirestore, Firestore, FieldValue } from 'firebase-admin/firestore';
 import { cfg } from '../config.js';
 import type { Store, StoreQuery, WithId } from './store.js';
 import { setStore } from './store.js';
@@ -39,6 +39,13 @@ export class FirestoreStore implements Store {
 
   async delete(path: string, id: string): Promise<void> {
     await this.db.collection(path).doc(id).delete();
+  }
+
+  async increment(path: string, id: string, field: string, delta: number): Promise<void> {
+    await this.db
+      .collection(path)
+      .doc(id)
+      .set({ [field]: FieldValue.increment(delta) }, { merge: true });
   }
 
   async query<T>(path: string, q: StoreQuery = {}): Promise<WithId<T>[]> {

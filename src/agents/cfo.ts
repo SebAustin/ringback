@@ -11,7 +11,7 @@ import { runAgent } from './runner.js';
  * write the P&L narrative, stores the report, and emails the founder.
  * The stored report doubles as the hackathon P&L evidence.
  */
-export async function runCfo(triggerDetail: string): Promise<{ runId: string; summary: string }> {
+export async function runCfo(triggerDetail: string): Promise<{ runId: string; summary: string; status: string }> {
   const result = await runAgent('cfo', { type: 'cron', detail: triggerDetail }, undefined, async (ctx) => {
     const store = getStore();
     const weekAgo = isoDateOnly(new Date(Date.now() - 7 * 86_400_000));
@@ -86,5 +86,5 @@ Daily detail: ${JSON.stringify(days)}`;
 
     return `CFO report ${weekOf}: MRR $${mrrUsd} (${paying.length} paying tenants), ${totals.conversations} conversations, ${totals.bookings} bookings, $${totals.costUsd} variable cost this week.`;
   });
-  return { runId: result.runId, summary: result.summary };
+  return { runId: result.runId, summary: result.summary, status: result.status };
 }

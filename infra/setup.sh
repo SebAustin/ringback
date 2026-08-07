@@ -26,6 +26,16 @@ echo "== 2/6 Firestore (native mode)"
 gcloud firestore databases create --location="${REGION}" --project "${PROJECT_ID}" 2>/dev/null \
   || echo "   Firestore database already exists — OK"
 
+echo "== 2b/6 Firestore composite indexes (REQUIRED — the SMS path fails without them)"
+create_index() { gcloud firestore indexes composite create --collection-group="$1" --query-scope=COLLECTION "${@:2}" --project "${PROJECT_ID}" --quiet 2>/dev/null || echo "   index on $1 exists or is building — OK"; }
+create_index appointments --field-config field-path=status,order=ascending --field-config field-path=startsAt,order=ascending
+create_index sms_out --field-config field-path=tenantId,order=ascending --field-config field-path=createdAt,order=ascending
+create_index agent_runs --field-config field-path=status,order=ascending --field-config field-path=startedAt,order=descending
+create_index agent_runs --field-config field-path=trigger.detail,order=ascending --field-config field-path=startedAt,order=ascending
+create_index tenants --field-config field-path=ownerEmail,order=ascending --field-config field-path=createdAt,order=descending
+create_index prospects --field-config field-path=status,order=ascending --field-config field-path=createdAt,order=descending
+echo "   (canonical list also in firestore.indexes.json for firebase-cli users)"
+
 echo "== 3/6 Secrets (creates empty secrets; add values with 'gcloud secrets versions add')"
 for s in GEMINI_API_KEY TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN TWILIO_MESSAGING_SERVICE_SID \
          STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET SENDGRID_API_KEY SESSION_SECRET PLACES_API_KEY; do

@@ -29,7 +29,7 @@ export async function runSupport(inbound: {
   fromEmail: string;
   subject: string;
   body: string;
-}): Promise<{ runId: string; summary: string }> {
+}): Promise<{ runId: string; summary: string; status: string }> {
   const result = await runAgent(
     'support',
     { type: 'webhook', detail: 'inbound-email' },
@@ -105,7 +105,7 @@ export async function runSupport(inbound: {
       return `Support: answered "${inbound.subject}" (${verdict.classification}) autonomously.`;
     },
   );
-  return { runId: result.runId, summary: result.summary };
+  return { runId: result.runId, summary: result.summary, status: result.status };
 }
 
 registerApprovalExecutor('send_support_reply', async (payload) => {

@@ -81,7 +81,9 @@ export interface CheckoutInfo {
  * (number, AI-drafted profile, welcome email). The tenant goes live only
  * after the owner reviews the drafted profile (`pending_review` gate).
  */
-export async function runOnboarding(info: CheckoutInfo): Promise<{ runId: string; tenantId: string | null }> {
+export async function runOnboarding(
+  info: CheckoutInfo,
+): Promise<{ runId: string; tenantId: string | null; status: string }> {
   let tenantId: string | null = null;
   const result = await runAgent(
     'onboarding',
@@ -161,24 +163,27 @@ export async function runOnboarding(info: CheckoutInfo): Promise<{ runId: string
       tenantId = await store.add('tenants', tenant);
 
       const magic = createMagicToken(info.email);
+      let welcomeDelivered = false;
       await ctx.action('send_welcome_email', { to: info.email }, {
         execute: async () => {
-          await sendEmail({
+          const sent = await sendEmail({
             to: info.email,
             subject: `Welcome to RingBack — your AI receptionist is almost live`,
             text: `Hi!\n\nYour RingBack number is ${number.phoneNumber}.\n\nI read your website and pre-filled your services, FAQs and hours — please review them before we go live (this takes ~3 minutes):\n${cfg.APP_BASE_URL}/api/auth/callback?token=${magic}\n\nOnce you confirm, forward your business line to ${number.phoneNumber} (or set it as your conditional call-forward target) and every missed call gets texted back within seconds.\n\n— RingBack's onboarding agent (yes, an AI wrote and executed this onboarding — a human reviews everything you flag)`,
           });
+          welcomeDelivered = sent.delivered;
         },
       });
 
-      return `Onboarded "${info.businessName}" (${info.plan}): number ${number.phoneNumber} provisioned, profile drafted from ${info.website ? 'website' : 'defaults'}, welcome email sent. Awaiting owner review.`;
+      // Summaries are public evidence — never claim delivery that didn't happen.
+      return `Onboarded "${info.businessName}" (${info.plan}): number ${number.phoneNumber} provisioned, profile drafted from ${info.website ? 'website' : 'defaults'}, welcome email ${welcomeDelivered ? 'delivered' : 'recorded (delivery unverified — check emails_out)'}. Awaiting owner review.`;
     },
   );
-  return { runId: result.runId, tenantId };
+  return { runId: result.runId, tenantId, status: result.status };
 }
 
 /** Daily check-ins: day-3 nudge to unconfigured tenants, day-7 testimonial ask. */
-export async function runOnboardingCheckins(triggerDetail: string): Promise<{ runId: string; summary: string }> {
+export async function runOnboardingCheckins(triggerDetail: string): Promise<{ runId: string; summary: string; status: string }> {
   const result = await runAgent('onboarding', { type: 'cron', detail: triggerDetail }, undefined, async (ctx) => {
     const store = getStore();
     const tenants = await store.query<Tenant & { day3SentAt?: string; day7SentAt?: string }>('tenants', {});
@@ -208,5 +213,5 @@ export async function runOnboardingCheckins(triggerDetail: string): Promise<{ ru
     }
     return `Onboarding check-ins: ${sent} emails sent across ${tenants.length} tenants.`;
   });
-  return { runId: result.runId, summary: result.summary };
+  return { runId: result.runId, summary: result.summary, status: result.status };
 }

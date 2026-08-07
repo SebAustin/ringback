@@ -43,7 +43,9 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
     if (!tenant) return twimlEmpty();
     if (!tenant.forwardPhone || tenant.status !== 'live') {
       // No forwarding target — treat every call as missed, textback immediately.
-      void fireMissedCall(tenant, p);
+      // Awaited: on scale-to-zero Cloud Run, post-response work is throttled and
+      // can silently never run (C2). Twilio's webhook budget (15s) covers this.
+      await fireMissedCall(tenant, p);
       return twimlMissedCall(tenant.name);
     }
     return twimlDial(tenant.forwardPhone, `${cfg.APP_BASE_URL}/webhooks/twilio/voice/status`);
@@ -57,7 +59,7 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
     reply.type('text/xml');
     if (!tenant) return twimlEmpty();
     if (p.DialCallStatus === 'completed') return twimlEmpty();
-    void fireMissedCall(tenant, p);
+    await fireMissedCall(tenant, p);
     return twimlMissedCall(tenant.name);
   });
 
@@ -67,7 +69,14 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
     const p = params(req);
     const tenant = await tenantByNumber(p.To);
     reply.type('text/xml');
-    if (!tenant || !p.From || !p.Body) return twimlEmpty();
+    if (!tenant || !p.From) return twimlEmpty();
+
+    // MMS with no caption: don't drop the customer on the floor — record it
+    // and hand the thread to the owner.
+    if (!p.Body && Number(p.NumMedia ?? 0) > 0) {
+      p.Body = '[Customer sent a photo/attachment — SMS assistant cannot view media; escalating to you.]';
+    }
+    if (!p.Body) return twimlEmpty();
 
     await runAgent(
       'receptionist',
@@ -115,7 +124,11 @@ export function registerTwilioRoutes(app: FastifyInstance): void {
 }
 
 async function fireMissedCall(tenant: WithId<Tenant>, p: TwilioParams): Promise<void> {
-  if (!p.From || !p.CallSid) return;
+  if (!p.From || !p.CallSid) {
+    // eslint-disable-next-line no-console
+    console.error(JSON.stringify({ severity: 'warning', msg: 'missed-call webhook without From/CallSid', tenant: tenant.id }));
+    return;
+  }
   await runAgent(
     'receptionist',
     { type: 'webhook', detail: 'twilio:missed-call' },

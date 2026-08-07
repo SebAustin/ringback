@@ -6,7 +6,7 @@ let client: Stripe | null = null;
 export function getStripe(): Stripe {
   if (!client) {
     if (!cfg.STRIPE_SECRET_KEY) throw new Error('STRIPE_SECRET_KEY is not configured');
-    client = new Stripe(cfg.STRIPE_SECRET_KEY);
+    client = new Stripe(cfg.STRIPE_SECRET_KEY, { timeout: 8000, maxNetworkRetries: 1 });
   }
   return client;
 }

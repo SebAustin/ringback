@@ -2,6 +2,7 @@ import twilio from 'twilio';
 import { cfg, twilioMock } from '../config.js';
 import { getStore } from './store.js';
 import { nowIso } from './time.js';
+import { retryOnce, withTimeout } from './async.js';
 
 /** Approximate cost per outbound SMS segment (US long code / toll-free). */
 export const SMS_SEGMENT_COST_USD = 0.0079;
@@ -12,9 +13,16 @@ function getClient(): twilio.Twilio {
   return client;
 }
 
+/** Non-ASCII characters that are still GSM-7 (approximation of the GSM charset). */
+const GSM_EXTRA = new Set('\u00a3\u00a5\u20ac\u00a7\u00bf\u00a1\u00c4\u00d6\u00d1\u00dc\u00e4\u00f6\u00f1\u00fc\u00e0\u00e8\u00e9\u00ec\u00f2\u00f9\u00df\u00c5\u00e5\u00c6\u00e6\u00d8\u00f8\u00c9');
+
 export function segmentCount(body: string): number {
-  // GSM-7: 160 chars single segment, 153 per segment when concatenated.
   const len = body.length;
+  // Any character outside GSM-7 (emoji, most non-Latin scripts) switches the
+  // whole message to UCS-2: 70 chars single segment, 67 concatenated.
+  const isUcs2 = [...body].some((ch) => ch.charCodeAt(0) > 0x7f && !GSM_EXTRA.has(ch));
+  if (isUcs2) return len <= 70 ? 1 : Math.ceil(len / 67);
+  // GSM-7: 160 chars single segment, 153 per segment when concatenated.
   return len <= 160 ? 1 : Math.ceil(len / 153);
 }
 
@@ -41,13 +49,21 @@ export async function sendSms(opts: {
   if (twilioMock) {
     sid = `SMmock${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
   } else {
-    const msg = await getClient().messages.create({
-      to: opts.to,
-      body: opts.body,
-      ...(cfg.TWILIO_MESSAGING_SERVICE_SID
-        ? { messagingServiceSid: cfg.TWILIO_MESSAGING_SERVICE_SID }
-        : { from: opts.from }),
-    });
+    const msg = await retryOnce(
+      () =>
+        withTimeout(
+          getClient().messages.create({
+            to: opts.to,
+            body: opts.body,
+            ...(cfg.TWILIO_MESSAGING_SERVICE_SID
+              ? { messagingServiceSid: cfg.TWILIO_MESSAGING_SERVICE_SID }
+              : { from: opts.from }),
+          }),
+          6_000,
+          'twilio:sendSms',
+        ),
+      'twilio:sendSms',
+    );
     sid = msg.sid;
   }
 

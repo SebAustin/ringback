@@ -1,6 +1,7 @@
 import { cfg } from '../config.js';
 import { getStore } from './store.js';
 import { nowIso } from './time.js';
+import { retryOnce } from './async.js';
 
 /**
  * Send an email via SendGrid. Without an API key the message is recorded to
@@ -14,27 +15,41 @@ export async function sendEmail(opts: {
 }): Promise<{ delivered: boolean }> {
   let delivered = false;
   if (cfg.SENDGRID_API_KEY) {
-    const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${cfg.SENDGRID_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        personalizations: [{ to: [{ email: opts.to }] }],
-        from: { email: cfg.EMAIL_FROM, name: 'RingBack' },
-        subject: opts.subject,
-        content: [
-          { type: 'text/plain', value: opts.text },
-          ...(opts.html ? [{ type: 'text/html', value: opts.html }] : []),
-        ],
-      }),
-    });
-    delivered = res.status === 202;
-    if (!delivered) {
-      const detail = await res.text().catch(() => '');
+    try {
+      const res = await retryOnce(async () => {
+        const r = await fetch('https://api.sendgrid.com/v3/mail/send', {
+          method: 'POST',
+          signal: AbortSignal.timeout(5000),
+          headers: {
+            Authorization: `Bearer ${cfg.SENDGRID_API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            personalizations: [{ to: [{ email: opts.to }] }],
+            from: { email: cfg.EMAIL_FROM, name: 'RingBack' },
+            subject: opts.subject,
+            content: [
+              { type: 'text/plain', value: opts.text },
+              ...(opts.html ? [{ type: 'text/html', value: opts.html }] : []),
+            ],
+          }),
+        });
+        if (r.status === 429 || r.status >= 500) {
+          throw Object.assign(new Error(`SendGrid ${r.status}`), { status: r.status });
+        }
+        return r;
+      }, 'sendgrid:send');
+      delivered = res.status === 202;
+      if (!delivered) {
+        const detail = await res.text().catch(() => '');
+        // eslint-disable-next-line no-console
+        console.error(
+          JSON.stringify({ severity: 'error', msg: 'SendGrid send failed', status: res.status, detail: detail.slice(0, 300) }),
+        );
+      }
+    } catch (err) {
       // eslint-disable-next-line no-console
-      console.error(`SendGrid send failed (${res.status}): ${detail.slice(0, 300)}`);
+      console.error(JSON.stringify({ severity: 'error', msg: 'SendGrid send error', err: String(err) }));
     }
   }
   await getStore().add('emails_out', {

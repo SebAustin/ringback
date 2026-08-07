@@ -135,6 +135,16 @@ export async function executeTool(
       if (!slot) {
         return { response: { ok: false, error: 'that slot is no longer open — offer the customer the latest availability' } };
       }
+      // Atomic slot lock: two concurrent bookings for the same slot cannot both
+      // win (check-then-act alone is racy across instances).
+      const lockId = `${ctx.tenantId}:${slot.startsAt}`;
+      const lockAcquired = await store.createIfAbsent('slot_locks', lockId, {
+        conversationId: ctx.conversationId,
+        createdAt: nowIso(),
+      });
+      if (!lockAcquired) {
+        return { response: { ok: false, error: 'that slot was just taken — offer the customer the next open slot' } };
+      }
       const appointment: Appointment = {
         tenantId: ctx.tenantId,
         conversationId: ctx.conversationId,
@@ -153,12 +163,19 @@ export async function executeTool(
         outcome: 'booked',
         callerName,
       });
+      // Owner alert is best-effort — a bad owner number must never lose the
+      // caller's confirmation after the appointment is already written.
       if (ctx.tenant.ownerPhone && ctx.conversation.channel === 'sms') {
-        await sendSms({
-          to: ctx.tenant.ownerPhone,
-          body: ownerBookingAlert({ callerName, service, slotLabel: slot.label }),
-          tenantId: ctx.tenantId,
-        });
+        try {
+          await sendSms({
+            to: ctx.tenant.ownerPhone,
+            body: ownerBookingAlert({ callerName, service, slotLabel: slot.label }),
+            tenantId: ctx.tenantId,
+          });
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error(JSON.stringify({ severity: 'warning', msg: 'owner booking alert failed', tenantId: ctx.tenantId, err: String(err) }));
+        }
       }
       return {
         response: { ok: true, confirmed: { service, startsAt: slot.startsAt, label: slot.label } },
@@ -172,14 +189,19 @@ export async function executeTool(
         status: 'escalated',
       });
       if (ctx.tenant.ownerPhone && ctx.conversation.channel === 'sms') {
-        await sendSms({
-          to: ctx.tenant.ownerPhone,
-          body: ownerEscalationAlert({
-            maskedCaller: maskPhone(ctx.conversation.callerPhone),
-            reason,
-          }),
-          tenantId: ctx.tenantId,
-        });
+        try {
+          await sendSms({
+            to: ctx.tenant.ownerPhone,
+            body: ownerEscalationAlert({
+              maskedCaller: maskPhone(ctx.conversation.callerPhone),
+              reason,
+            }),
+            tenantId: ctx.tenantId,
+          });
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error(JSON.stringify({ severity: 'warning', msg: 'owner escalation alert failed', tenantId: ctx.tenantId, err: String(err) }));
+        }
       }
       return {
         response: { ok: true, note: 'Owner alerted. Tell the customer someone will reach out shortly.' },

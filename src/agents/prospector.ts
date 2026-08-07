@@ -57,7 +57,7 @@ interface DraftedProspect {
  * Daily prospecting sweep. DRAFT-ONLY by design: nothing is ever sent without
  * a human approval click — cold outreach stays human-in-the-loop.
  */
-export async function runProspector(triggerDetail: string): Promise<{ runId: string; summary: string }> {
+export async function runProspector(triggerDetail: string): Promise<{ runId: string; summary: string; status: string }> {
   const result = await runAgent('prospector', { type: 'cron', detail: triggerDetail }, undefined, async (ctx) => {
     const store = getStore();
     const dayIndex = Math.floor(Date.now() / 86_400_000) % ROTATION.length;
@@ -141,7 +141,7 @@ export async function runProspector(triggerDetail: string): Promise<{ runId: str
     }
     return `Prospector drafted ${queued} outreach emails for ${category} in ${city} (${drafted.length} researched). All await founder approval.`;
   });
-  return { runId: result.runId, summary: result.summary };
+  return { runId: result.runId, summary: result.summary, status: result.status };
 }
 
 // Approval: deliver the ready-to-forward draft to the founder's inbox (the

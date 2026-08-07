@@ -24,6 +24,8 @@ export interface Store {
   createIfAbsent<T extends object>(path: string, id: string, data: T): Promise<boolean>;
   delete(path: string, id: string): Promise<void>;
   query<T>(path: string, q?: StoreQuery): Promise<WithId<T>[]>;
+  /** Atomic numeric increment (top-level field) — counters must never be read-modify-write. */
+  increment(path: string, id: string, field: string, delta: number): Promise<void>;
 }
 
 function valueAtPath(obj: unknown, dotted: string): unknown {
@@ -42,6 +44,8 @@ function compare(a: unknown, b: unknown): number {
 
 function matches(doc: unknown, [field, op, value]: [string, WhereOp, unknown]): boolean {
   const v = valueAtPath(doc, field);
+  // Firestore parity: documents missing the filtered field never match.
+  if (v === undefined) return false;
   switch (op) {
     case '==':
       return v === value;
@@ -58,6 +62,9 @@ function matches(doc: unknown, [field, op, value]: [string, WhereOp, unknown]): 
   }
 }
 
+/** FIFO cap so long-lived dev/demo deployments can't grow without bound. */
+const MEMORY_MAX_DOCS_PER_COLLECTION = 5000;
+
 /** In-memory store. Deep-clones on read/write so callers can't mutate state. */
 export class MemoryStore implements Store {
   private collections = new Map<string, Map<string, object>>();
@@ -72,13 +79,22 @@ export class MemoryStore implements Store {
     return c;
   }
 
+  private evictIfFull(coll: Map<string, object>, incomingId: string): void {
+    if (coll.size >= MEMORY_MAX_DOCS_PER_COLLECTION && !coll.has(incomingId)) {
+      const oldest = coll.keys().next().value;
+      if (oldest !== undefined) coll.delete(oldest);
+    }
+  }
+
   async get<T>(path: string, id: string): Promise<WithId<T> | null> {
     const doc = this.coll(path).get(id);
     return doc ? ({ ...structuredClone(doc), id } as WithId<T>) : null;
   }
 
   async set<T extends object>(path: string, id: string, data: T): Promise<void> {
-    this.coll(path).set(id, structuredClone(data));
+    const coll = this.coll(path);
+    this.evictIfFull(coll, id);
+    coll.set(id, structuredClone(data));
   }
 
   async merge(path: string, id: string, data: Record<string, unknown>): Promise<void> {
@@ -128,10 +144,18 @@ export class MemoryStore implements Store {
     }
     if (q.orderBy) {
       const [field, dir] = q.orderBy;
+      // Firestore parity: docs missing the orderBy field are excluded.
+      docs = docs.filter((d) => valueAtPath(d, field) !== undefined);
       docs.sort((a, b) => compare(valueAtPath(a, field), valueAtPath(b, field)) * (dir === 'asc' ? 1 : -1));
     }
     if (q.limit !== undefined) docs = docs.slice(0, q.limit);
     return docs;
+  }
+
+  async increment(path: string, id: string, field: string, delta: number): Promise<void> {
+    const existing = (this.coll(path).get(id) ?? {}) as Record<string, unknown>;
+    const current = typeof existing[field] === 'number' ? (existing[field] as number) : 0;
+    this.coll(path).set(id, { ...existing, [field]: current + delta });
   }
 }
 
