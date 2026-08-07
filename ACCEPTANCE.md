@@ -31,3 +31,29 @@ Deployment to Cloud Run (needs billing + pasted secrets), Twilio account
 upgrade + A2P/toll-free registration, Stripe activation, domain, SendGrid —
 and, above all, **selling**: the 4-week clock to Aug 17 is now a
 customer-acquisition clock, not an engineering one.
+
+---
+
+## Addendum — robustness review cycle (2026-08-07)
+
+A dedicated senior-engineer robustness review (new `robustness-reviewer` role)
+ran three rounds against the SOLID-verified build:
+
+- **Round 1 (REWORK):** 4 CRITICAL + 13 HIGH — headline items: textback ran
+  post-response on CPU-throttled scale-to-zero Cloud Run (could silently never
+  send); no Firestore composite indexes existed (first production SMS would
+  fail invisibly); Stripe onboarding failure dropped paid customers silently;
+  `void`-ed promise could crash the instance. All fixed in `c0574a6`.
+- **Round 2 (REWORK):** the fix round itself introduced 3 regressions the
+  reviewer proved: takeover messages invisible (missing `seq`), permanent slot
+  poisoning from unreleased locks, webhook-budget overrun + SMS double-text on
+  timeout-retry. All fixed in `b8e95d9`, with `Message.seq` made required so
+  the compiler blocks recurrence.
+- **Round 3: APPROVE.** Independent re-trace confirmed every fix; gate
+  reproduced (tsc clean, 68/68 tests, build green).
+
+Backlog (LOW, non-blocking, from the reviewer): tolerated lock self-heal race
+(documented in tools.ts), remaining-budget-aware owner-alert timeout, M3 DST
+day-stepping + booking lead-time buffer in `computeAvailability` (schedule
+first — loses a day of availability twice a year), M8 transcript
+subcollection, lib-layer logging via Fastify logger.

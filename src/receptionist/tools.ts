@@ -147,6 +147,10 @@ export async function executeTool(
       if (!lockAcquired) {
         // Self-heal orphaned locks: a lock with no confirmed appointment behind
         // it (failed write, cancellation) must not poison the slot forever (R2).
+        // Known tolerated window: if this read lands between a rival's lock
+        // acquisition and its appointment commit, we delete their lock and ask
+        // the model to retry — by then getAvailability filters the slot out,
+        // so the worst case is one spurious retry message, never a double-book.
         const stillBooked = (await loadBooked(ctx.tenantId)).some((b) => b.startsAt === slot.startsAt);
         if (stillBooked) {
           return { response: { ok: false, error: 'that slot was just taken — offer the customer the next open slot' } };
