@@ -1,5 +1,5 @@
 import twilio from 'twilio';
-import { cfg, twilioMock } from '../config.js';
+import { cfg, isProd, twilioConfigured, twilioMock } from '../config.js';
 import { getStore } from './store.js';
 import { nowIso } from './time.js';
 import { isRetriable, retryOnce, TimeoutError, withTimeout } from './async.js';
@@ -88,6 +88,13 @@ export function validateTwilioSignature(
   params: Record<string, string>,
   signature: string | undefined,
 ): boolean {
+  // Production NEVER accepts an unverified webhook. With no credentials the
+  // telephony routes are simply closed — mock mode is a dev-only convenience
+  // and must never become a signature bypass in prod.
+  if (isProd) {
+    if (!twilioConfigured || !signature) return false;
+    return twilio.validateRequest(cfg.TWILIO_AUTH_TOKEN, signature, url, params);
+  }
   if (twilioMock) return true;
   if (!signature) return false;
   return twilio.validateRequest(cfg.TWILIO_AUTH_TOKEN, signature, url, params);
