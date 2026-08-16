@@ -13,13 +13,17 @@ Film shots 1–3 first — those alone are a valid submission video.
 Open `/demo` **on your phone** and screen-record. The page opens as
 "You missed a call from Luxe Cuts Salon."
 
-Type **exactly these two messages** — both verified against production today,
-they book on the first try:
+Type **exactly these two messages** — verified live against production, they
+book on the first try:
 
 1. `Hi, do you have anything open this week for a men's cut?`
-   → AI replies with real slots + "A men's cut is 30 minutes for $35."
-2. `Tuesday at 10 works. My name is Alex`
-   → AI confirms the booking and a confirmation ticket appears
+   → AI replies with real open slots (and often the $35 price from config)
+2. `The first one works. My name is Alex`
+   → AI confirms the booking, and a CONFIRMED ticket appears below the phone
+
+> **Do not name a specific time** ("Tuesday at 10") — the slots on offer change
+> as bookings fill up, so a hardcoded time can land on one that's already gone
+> and the AI will correctly refuse it. "The first one works" always lands.
 
 **Say over it (keep it this tight):**
 > "A customer calls a salon. Nobody picks up. Five seconds later they get this
