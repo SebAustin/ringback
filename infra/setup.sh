@@ -59,6 +59,18 @@ for s in GEMINI_API_KEY TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN TWILIO_MESSAGING_SE
     || echo "   secret $s exists — OK"
 done
 
+echo "== 3b/6 Granting the Cloud Run runtime access to those secrets"
+PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
+RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+for s in GEMINI_API_KEY TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN TWILIO_MESSAGING_SERVICE_SID \
+         STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET SENDGRID_API_KEY SESSION_SECRET PLACES_API_KEY; do
+  gcloud secrets add-iam-policy-binding "$s" \
+    --member="serviceAccount:${RUNTIME_SA}" \
+    --role=roles/secretmanager.secretAccessor \
+    --project "${PROJECT_ID}" --quiet >/dev/null 2>&1 \
+    && echo "   granted on $s" || echo "   could not grant on $s (check manually)"
+done
+
 echo "== 4/6 Scheduler service account"
 gcloud iam service-accounts create scheduler-invoker \
   --display-name "Cloud Scheduler → RingBack agents" --project "${PROJECT_ID}" 2>/dev/null \
