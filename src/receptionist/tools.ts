@@ -1,7 +1,14 @@
 import { Type, type FunctionDeclaration } from '@google/genai';
 import type { Appointment, Conversation, Tenant } from '../types.js';
 import { getStore } from '../lib/store.js';
-import { computeAvailability, formatSlotLabel, nowIso, type Slot } from '../lib/time.js';
+import {
+  computeAvailability,
+  formatSlotLabel,
+  isWithinBusinessHours,
+  nowIso,
+  overlapsBooked,
+  type Slot,
+} from '../lib/time.js';
 import { maskPhone, sendSms } from '../lib/twilio.js';
 import { ownerBookingAlert, ownerEscalationAlert } from './prompts.js';
 
@@ -128,11 +135,28 @@ export async function executeTool(
       if (Number.isNaN(start.getTime()) || start.getTime() <= Date.now()) {
         return { response: { ok: false, error: 'slot is invalid or in the past — call get_availability again' } };
       }
-      // The chosen slot must still be genuinely open (server-side validation —
-      // the model cannot book arbitrary times).
-      const open = await getAvailability(ctx, { days: 14, service });
-      const slot = open.find((s) => s.startsAt === start.toISOString());
-      if (!slot) {
+      // Server-side validation — the model cannot book arbitrary times. This
+      // checks the TIME directly (business hours + no overlap) rather than
+      // membership of a regenerated slot grid, whose step size depends on which
+      // service built it: a time legitimately offered by one get_availability
+      // call could be absent from another call's grid and get wrongly refused.
+      const durationMin = serviceDuration(ctx.tenant, service);
+      const endsAt = new Date(start.getTime() + durationMin * 60_000);
+      const slot = {
+        startsAt: start.toISOString(),
+        endsAt: endsAt.toISOString(),
+        label: formatSlotLabel(start, ctx.tenant.profile.timezone),
+      };
+      const withinHours = isWithinBusinessHours({
+        hours: ctx.tenant.profile.hours,
+        timezone: ctx.tenant.profile.timezone,
+        startsAt: start,
+        durationMin,
+      });
+      if (!withinHours) {
+        return { response: { ok: false, error: 'that time is outside business hours — call get_availability and offer a real opening' } };
+      }
+      if (overlapsBooked(slot.startsAt, slot.endsAt, await loadBooked(ctx.tenantId))) {
         return { response: { ok: false, error: 'that slot is no longer open — offer the customer the latest availability' } };
       }
       // Atomic slot lock: two concurrent bookings for the same slot cannot both

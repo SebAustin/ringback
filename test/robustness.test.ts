@@ -12,6 +12,7 @@ import { executeTool } from '../src/receptionist/tools.js';
 import { inboundEmailKey } from '../src/routes/agents.js';
 import { createSessionCookie, SESSION_COOKIE } from '../src/lib/auth.js';
 import { retryOnce, TimeoutError } from '../src/lib/async.js';
+import { localParts, zonedToUtc } from '../src/lib/time.js';
 import type { Conversation, Tenant } from '../src/types.js';
 
 /** Mid-day ET Wednesday — deterministic, safely outside quiet hours. */
@@ -211,6 +212,53 @@ describe('slot lock lifecycle (R2)', () => {
       ctx,
     );
     expect(retry.response.ok).toBe(true);
+  });
+});
+
+describe('booking validates the time, not a grid', () => {
+  /** Next Wednesday 10:15 ET — inside demo hours (09:00–18:00) but off BOTH the
+   * 45-min and 30-min slot grids, so grid-membership validation would refuse it. */
+  function nextWednesday1015(): Date {
+    const now = new Date();
+    for (let i = 1; i <= 14; i++) {
+      const d = new Date(now.getTime() + i * 86_400_000);
+      const lp = localParts(d, 'America/New_York');
+      if (lp.weekday === 'wed') {
+        return zonedToUtc({ y: lp.y, m: lp.m, d: lp.d }, '10:15', 'America/New_York');
+      }
+    }
+    throw new Error('no wednesday found');
+  }
+
+  test('books an in-hours time that lands between grid steps', async () => {
+    const conversation = await findOrCreateConversation({
+      tenantId, callerPhone: '+15550005151', channel: 'web_sim', source: 'demo',
+    });
+    const ctx = { tenantId, tenant, conversationId: conversation.id, conversation };
+    const res = await executeTool(
+      'book_appointment',
+      { slotStartsAt: nextWednesday1015().toISOString(), callerName: 'Robin', service: "Men's Cut" },
+      ctx,
+    );
+    expect(res.response.ok).toBe(true);
+    expect(res.booked).toBeTruthy();
+  });
+
+  test('refuses a time outside business hours', async () => {
+    const conversation = await findOrCreateConversation({
+      tenantId, callerPhone: '+15550005252', channel: 'web_sim', source: 'demo',
+    });
+    const ctx = { tenantId, tenant, conversationId: conversation.id, conversation };
+    const wed = nextWednesday1015();
+    const lp = localParts(wed, 'America/New_York');
+    const midnight = zonedToUtc({ y: lp.y, m: lp.m, d: lp.d }, '23:30', 'America/New_York');
+    const res = await executeTool(
+      'book_appointment',
+      { slotStartsAt: midnight.toISOString(), callerName: 'Robin', service: "Men's Cut" },
+      ctx,
+    );
+    expect(res.response.ok).toBe(false);
+    expect(String(res.response.error)).toContain('outside business hours');
   });
 });
 

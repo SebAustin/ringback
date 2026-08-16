@@ -114,6 +114,43 @@ export function computeAvailability(opts: {
   return slots;
 }
 
+/**
+ * True when [startsAt, startsAt+durationMin) fits entirely inside one of the
+ * tenant's business-hours windows for that local day.
+ *
+ * Booking validates against this directly rather than against a generated slot
+ * grid: the grid's step size depends on which service was used to build it, so
+ * a slot offered by one call can be absent from another call's grid even though
+ * the time is genuinely free.
+ */
+export function isWithinBusinessHours(opts: {
+  hours: WeeklyHours;
+  timezone: string;
+  startsAt: Date;
+  durationMin: number;
+}): boolean {
+  const { hours, timezone, startsAt, durationMin } = opts;
+  const lp = localParts(startsAt, timezone);
+  const endsAt = new Date(startsAt.getTime() + durationMin * 60_000);
+  for (const [open, close] of hours[lp.weekday] ?? []) {
+    const openUtc = zonedToUtc({ y: lp.y, m: lp.m, d: lp.d }, open, timezone);
+    const closeUtc = zonedToUtc({ y: lp.y, m: lp.m, d: lp.d }, close, timezone);
+    if (startsAt.getTime() >= openUtc.getTime() && endsAt.getTime() <= closeUtc.getTime()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** True when [startsAt, endsAt) overlaps any existing booking. */
+export function overlapsBooked(
+  startsAt: string,
+  endsAt: string,
+  booked: { startsAt: string; endsAt: string }[],
+): boolean {
+  return booked.some((b) => !(endsAt <= b.startsAt || startsAt >= b.endsAt));
+}
+
 export function formatSlotLabel(date: Date, timeZone: string): string {
   return new Intl.DateTimeFormat('en-US', {
     timeZone,
