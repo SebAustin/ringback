@@ -27,7 +27,15 @@ gcloud firestore databases create --location="${REGION}" --project "${PROJECT_ID
   || echo "   Firestore database already exists — OK"
 
 echo "== 2b/6 Firestore composite indexes (REQUIRED — the SMS path fails without them)"
-create_index() { gcloud firestore indexes composite create --collection-group="$1" --query-scope=COLLECTION "${@:2}" --project "${PROJECT_ID}" --quiet 2>/dev/null || echo "   index on $1 exists or is building — OK"; }
+# --async: fire all six, then poll once. Without it gcloud blocks on each index
+# build in turn (~5 min each) with no output, which looks exactly like a hang.
+create_index() {
+  local cg="$1"; shift
+  echo "   submitting index: ${cg}"
+  gcloud firestore indexes composite create --collection-group="${cg}" --query-scope=COLLECTION \
+    "$@" --project "${PROJECT_ID}" --quiet --async 2>&1 \
+    | grep -viE "already exists|^$" || true
+}
 create_index appointments --field-config field-path=status,order=ascending --field-config field-path=startsAt,order=ascending
 create_index sms_out --field-config field-path=tenantId,order=ascending --field-config field-path=createdAt,order=ascending
 create_index agent_runs --field-config field-path=status,order=ascending --field-config field-path=startedAt,order=descending
@@ -35,6 +43,14 @@ create_index agent_runs --field-config field-path=trigger.detail,order=ascending
 create_index tenants --field-config field-path=ownerEmail,order=ascending --field-config field-path=createdAt,order=descending
 create_index prospects --field-config field-path=status,order=ascending --field-config field-path=createdAt,order=descending
 echo "   (canonical list also in firestore.indexes.json for firebase-cli users)"
+echo "   waiting for indexes to reach READY — the app fail-fasts at boot without them"
+for _ in $(seq 1 80); do
+  building=$(gcloud firestore indexes composite list --project "${PROJECT_ID}" \
+    --format='value(state)' 2>/dev/null | grep -c 'CREATING' || true)
+  if [ "${building:-0}" -eq 0 ]; then echo "   all indexes READY"; break; fi
+  echo "   ${building} index(es) still building… (checking again in 15s)"
+  sleep 15
+done
 
 echo "== 3/6 Secrets (creates empty secrets; add values with 'gcloud secrets versions add')"
 for s in GEMINI_API_KEY TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN TWILIO_MESSAGING_SERVICE_SID \
