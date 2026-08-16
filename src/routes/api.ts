@@ -64,7 +64,12 @@ const ProfileSchema = z
     hours: z
       .record(
         z.enum(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']),
-        z.array(z.tuple([z.string().regex(/^\d{2}:\d{2}$/), z.string().regex(/^\d{2}:\d{2}$/)])),
+        z.array(
+          z.object({
+            open: z.string().regex(/^\d{2}:\d{2}$/),
+            close: z.string().regex(/^\d{2}:\d{2}$/),
+          }),
+        ),
       )
       .optional(),
     timezone: z.string().max(60).optional(),

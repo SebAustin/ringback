@@ -14,7 +14,7 @@ function toWeekHours(hours: TenantProfile['hours']): WeekHours {
   for (const day of WEEK_DAYS) {
     const windows = hours[day.key];
     const first = windows?.[0];
-    result[day.key] = { open: first?.[0] ?? '', close: first?.[1] ?? '' };
+    result[day.key] = { open: first?.open ?? '', close: first?.close ?? '' };
   }
   return result;
 }
@@ -23,7 +23,8 @@ function fromWeekHours(weekHours: WeekHours): TenantProfile['hours'] {
   const result: TenantProfile['hours'] = {};
   for (const day of WEEK_DAYS) {
     const window = weekHours[day.key];
-    result[day.key] = window && window.open && window.close ? [[window.open, window.close]] : [];
+    result[day.key] =
+      window && window.open && window.close ? [{ open: window.open, close: window.close }] : [];
   }
   return result;
 }

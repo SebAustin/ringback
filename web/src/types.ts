@@ -140,7 +140,10 @@ export interface MeResponse {
   tenantId?: string;
 }
 
-export type TenantHoursWindow = [string, string];
+export interface TenantHoursWindow {
+  open: string;
+  close: string;
+}
 
 export interface TenantProfile {
   services: { name: string; durationMin: number; price?: string }[];

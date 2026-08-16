@@ -14,7 +14,7 @@ describe('zonedToUtc', () => {
 });
 
 describe('computeAvailability', () => {
-  const hours = { wed: [['09:00', '11:00']] as [string, string][] };
+  const hours = { wed: [{ open: '09:00', close: '11:00' }] };
 
   test('generates slots inside business hours only', () => {
     // Wed Jul 22 2026. "now" = Tuesday, so Wednesday is within the window.

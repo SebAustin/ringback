@@ -12,8 +12,16 @@ export interface Faq {
   a: string;
 }
 
-/** Weekly hours: key = mon..sun, value = list of [open, close] "HH:MM" ranges. */
-export type WeeklyHours = Partial<Record<Weekday, [string, string][]>>;
+/** One open window in "HH:MM" local time. Objects, not tuples: Firestore
+ * rejects nested arrays ("invalid nested entity"), so [open, close] pairs
+ * cannot be persisted. */
+export interface HoursWindow {
+  open: string;
+  close: string;
+}
+
+/** Weekly hours: key = mon..sun, value = list of open windows for that day. */
+export type WeeklyHours = Partial<Record<Weekday, HoursWindow[]>>;
 export type Weekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
 
 export interface TenantProfile {

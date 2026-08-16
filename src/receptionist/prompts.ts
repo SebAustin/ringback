@@ -7,7 +7,7 @@ function hoursSummary(tenant: Tenant): string {
   for (const day of WEEKDAYS) {
     const ranges = hours[day];
     if (ranges && ranges.length > 0) {
-      lines.push(`${day}: ${ranges.map(([o, c]) => `${o}-${c}`).join(', ')}`);
+      lines.push(`${day}: ${ranges.map((r) => `${r.open}-${r.close}`).join(', ')}`);
     }
   }
   return lines.length > 0 ? lines.join('; ') : 'not configured — offer to have the owner confirm';

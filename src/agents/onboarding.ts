@@ -9,11 +9,11 @@ import { cfg } from '../config.js';
 import { runAgent } from './runner.js';
 
 const DEFAULT_HOURS = {
-  mon: [['09:00', '17:00']],
-  tue: [['09:00', '17:00']],
-  wed: [['09:00', '17:00']],
-  thu: [['09:00', '17:00']],
-  fri: [['09:00', '17:00']],
+  mon: [{ open: '09:00', close: '17:00' }],
+  tue: [{ open: '09:00', close: '17:00' }],
+  wed: [{ open: '09:00', close: '17:00' }],
+  thu: [{ open: '09:00', close: '17:00' }],
+  fri: [{ open: '09:00', close: '17:00' }],
 } as TenantProfile['hours'];
 
 const PRIVATE_HOST_RE =

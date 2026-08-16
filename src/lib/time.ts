@@ -95,7 +95,7 @@ export function computeAvailability(opts: {
     const dayInstant = new Date(now.getTime() + dayOffset * 86_400_000);
     const lp = localParts(dayInstant, timezone);
     const ranges = hours[lp.weekday] ?? [];
-    for (const [open, close] of ranges) {
+    for (const { open, close } of ranges) {
       const openUtc = zonedToUtc({ y: lp.y, m: lp.m, d: lp.d }, open, timezone);
       const closeUtc = zonedToUtc({ y: lp.y, m: lp.m, d: lp.d }, close, timezone);
       for (let t = openUtc.getTime(); t + stepMs <= closeUtc.getTime(); t += stepMs) {
@@ -132,7 +132,7 @@ export function isWithinBusinessHours(opts: {
   const { hours, timezone, startsAt, durationMin } = opts;
   const lp = localParts(startsAt, timezone);
   const endsAt = new Date(startsAt.getTime() + durationMin * 60_000);
-  for (const [open, close] of hours[lp.weekday] ?? []) {
+  for (const { open, close } of hours[lp.weekday] ?? []) {
     const openUtc = zonedToUtc({ y: lp.y, m: lp.m, d: lp.d }, open, timezone);
     const closeUtc = zonedToUtc({ y: lp.y, m: lp.m, d: lp.d }, close, timezone);
     if (startsAt.getTime() >= openUtc.getTime() && endsAt.getTime() <= closeUtc.getTime()) {
