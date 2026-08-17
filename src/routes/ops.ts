@@ -246,6 +246,21 @@ export function registerOpsRoutes(app: FastifyInstance): void {
         });
         ctx.addCost('gemini', result.usage.costUsd);
         booked = result.booked;
+        // Record the turn so the public /ops feed shows what the agent actually
+        // did — the transcript IS the evidence, an empty one proves nothing.
+        await ctx.log('caller-message', { prompt: text });
+        if (result.usage.toolCalls.length > 0) {
+          await ctx.log('gemini-tool-calls', {
+            toolCall: result.usage.toolCalls.join(' → '),
+            result: result.booked
+              ? `booked ${result.booked.service} at ${result.booked.label}`
+              : 'availability fetched',
+          });
+        }
+        await ctx.log('assistant-reply', {
+          response: result.reply ?? '(no reply — guardrail applied)',
+          result: `tokens in/out: ${result.usage.inTokens}/${result.usage.outTokens} · cost $${result.usage.costUsd.toFixed(5)}${result.guardrail ? ` · guardrail: ${result.guardrail}` : ''}`,
+        });
         return `Demo conversation turn: ${result.booked ? `booked ${result.booked.service}` : (result.guardrail ?? 'replied')} (web simulator).`;
       },
     );
