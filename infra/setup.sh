@@ -82,6 +82,20 @@ gcloud logging sinks create ringback-to-bq \
   "bigquery.googleapis.com/projects/${PROJECT_ID}/datasets/ringback_logs" \
   --log-filter='resource.type="cloud_run_revision" resource.labels.service_name="'"${SERVICE}"'"' \
   --project "${PROJECT_ID}" 2>/dev/null || echo "   sink exists — OK"
+# The sink gets its own service identity, which needs WRITER on the dataset or
+# every routed log silently fails with dataset_permission_denied.
+SINK_SA="$(gcloud logging sinks describe ringback-to-bq --project "${PROJECT_ID}" --format='value(writerIdentity)' 2>/dev/null)"
+if [[ -n "${SINK_SA}" ]]; then
+  TOKEN="$(gcloud auth print-access-token)"
+  DS_URL="https://bigquery.googleapis.com/bigquery/v2/projects/${PROJECT_ID}/datasets/ringback_logs"
+  curl -s -H "Authorization: Bearer ${TOKEN}" "${DS_URL}" \
+    | python3 -c "import json,sys,os; d=json.load(sys.stdin); a=d.get('access',[]); sa=os.environ['SINK_SA'].replace('serviceAccount:',''); a=[x for x in a if x.get('userByEmail')!=sa]; a.append({'role':'WRITER','userByEmail':sa}); json.dump({'access':a}, open('/tmp/_bqpatch.json','w'))" \
+    && curl -s -X PATCH -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+       -d @/tmp/_bqpatch.json "${DS_URL}" >/dev/null \
+    && echo "   granted BigQuery WRITER to the sink identity" \
+    || echo "   could not grant sink writer — check the dataset IAM manually"
+  rm -f /tmp/_bqpatch.json
+fi
 
 echo "== 6/6 Cloud Scheduler jobs (created after first deploy; needs APP_URL)"
 APP_URL="${APP_URL:-}"
